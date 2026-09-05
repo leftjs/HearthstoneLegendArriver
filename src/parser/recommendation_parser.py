@@ -26,7 +26,7 @@ class RecommendationParser:
     _enemy_hero_targets = {"目标是对方英雄", "目标是敌方英雄"}
     _friendly_hero_targets = {"目标是己方英雄", "目标是我方英雄"}
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
-    _discover = re.compile(r"^选择我方([1-3])号位卡牌$")
+    _discover = re.compile(r"^选择我方([1-4])号位卡牌$")
     _reference_a_headers = {"打法参考A", "打法参考Ａ"}
     _reference_b_headers = {"打法参考B", "打法参考Ｂ"}
 

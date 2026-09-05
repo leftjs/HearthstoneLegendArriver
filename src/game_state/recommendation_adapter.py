@@ -103,7 +103,7 @@ def adapt_action(proposed, state):
                              target_id, "location_changed")
     if proposed.action == ActionKind.CHOOSE_DISCOVER:
         choice_count = getattr(state, "discover_choice_count", None)
-        if choice_count not in (1, 2, 3):
+        if choice_count not in (1, 2, 3, 4):
             raise RecommendationStateError("discover_choice_count_unavailable")
         if (proposed.source is None
                 or proposed.source.kind != "discover_slot"

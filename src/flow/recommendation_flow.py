@@ -242,7 +242,7 @@ class RecommendationFlow:
                     != getattr(before.my_hero_power, "exhausted", 0)
                     or after.my_last_mana != before.my_last_mana)
         if kind == "choice_resolved":
-            if (getattr(before, "discover_choice_count", None) in (1, 2, 3)
+            if (getattr(before, "discover_choice_count", None) in (1, 2, 3, 4)
                     and getattr(after, "discover_choice_count", None) is None):
                 return True
             before_hand = tuple(
