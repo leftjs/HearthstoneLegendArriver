@@ -56,6 +56,20 @@ class TimelineParserTests(unittest.TestCase):
         self.assertEqual(ActionKind.TIMELINE_KEEP, proposed.action)
         self.assertEqual("维持", proposed.normalized_instruction)
 
+    def test_suffixed_button_labels_parse_to_timeline_action(self):
+        # 追加字常是带标题的按钮文案「回溯时间线/维持时间线」，也可能 OCR 把
+        # 空白也读进同一行（「回溯 时间线」），或把「时间线」读成单独一行（该行
+        # 非动作行会被过滤，只剩「回溯」）。
+        for text, expected in (
+                ("回溯时间线", ActionKind.TIMELINE_UNDO),
+                ("回溯 时间线", ActionKind.TIMELINE_UNDO),
+                ("回溯\n时间线", ActionKind.TIMELINE_UNDO),
+                ("维持时间线", ActionKind.TIMELINE_KEEP),
+                ("打法参考A\n回溯时间线", ActionKind.TIMELINE_UNDO)):
+            with self.subTest(text=text):
+                proposed = self._parse(text)
+                self.assertEqual(expected, proposed.action)
+
     def test_timeline_coexists_with_the_pending_play_line(self):
         # 弹框时上一句「打出N号位随从」还挂着、旁边带一行时间线字：
         # 那张卡上一步已打出并消费，这次只点时间线按钮，不再执行打出。
@@ -65,10 +79,32 @@ class TimelineParserTests(unittest.TestCase):
                 proposed = self._parse(text)
                 self.assertEqual(expected, proposed.action)
 
-    def test_timeline_mixed_with_non_play_action_is_ambiguous(self):
-        # 与打出以外的动作共存无法判定点哪个，报歧义走重试，绝不猜。
-        for text in ("维持\n结束回合", "回溯\n锻造2号位卡牌",
-                     "回溯\n维持", "维持\n打出1号位随从\n打出2号位随从"):
+    def test_timeline_coexists_with_pending_discover_hand_pick(self):
+        # 战吼打完、手牌目标选择（如「选择我方2号位卡牌」）也已完成，但该句仍挂
+        # 在面板上、旁边再追加「回溯时间线」——此刻点回溯按钮、不再重选。
+        for text, expected in (
+                ("选择我方2号位卡牌\n回溯时间线", ActionKind.TIMELINE_UNDO),
+                ("选择我方2号位卡牌\n维持", ActionKind.TIMELINE_KEEP)):
+            with self.subTest(text=text):
+                proposed = self._parse(text)
+                self.assertEqual(expected, proposed.action)
+
+    def test_timeline_word_beats_any_coexisting_content(self):
+        # 盒子在特效完成后把时间线字追加在残留推荐旁；弹框模态，点按钮前什么都
+        # 做不了，所以共存内容一律忽略：出现回溯点回溯、出现维持点维持。
+        for text, expected in (
+                ("结束回合\n维持", ActionKind.TIMELINE_KEEP),
+                ("回溯\n锻造2号位卡牌", ActionKind.TIMELINE_UNDO),
+                ("维持\n打出1号位随从\n打出2号位随从",
+                 ActionKind.TIMELINE_KEEP),
+                ("使用英雄技能\n回溯", ActionKind.TIMELINE_UNDO),
+                ("替换1号位卡牌\n回溯时间线", ActionKind.TIMELINE_UNDO)):
+            with self.subTest(text=text):
+                self.assertEqual(expected, self._parse(text).action)
+
+    def test_undo_and_keep_shown_together_is_ambiguous(self):
+        # 回溯/维持同屏无法判定该点哪个，报歧义走重试、绝不猜。
+        for text in ("回溯\n维持", "回溯时间线\n维持", "回溯\n维持时间线"):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(
                         RecommendationParseError, "ambiguous_actions"):
@@ -309,6 +345,20 @@ class TimelineFlowTests(unittest.TestCase):
         second = flow.run_player_turn_step()
         self.assertEqual(FlowStepStatus.RETRY, second.status)
         self.assertEqual([TimelineAction("keep")], controller.actions)
+
+    def test_pending_discover_line_with_undo_only_clicks_undo_once(self):
+        # 战吼手牌目标选完后，「选择我方2号位卡牌」仍挂在面板上并追加
+        # 「回溯时间线」：只点一次回溯，不因文字未变而重复撤销。
+        flow, controller = self._step("选择我方2号位卡牌\n回溯时间线")
+
+        result = flow.run_player_turn_step()
+
+        self.assertEqual(FlowStepStatus.OBSERVE, result.status)
+        self.assertEqual([TimelineAction("undo")], controller.actions)
+
+        second = flow.run_player_turn_step()
+        self.assertEqual(FlowStepStatus.RETRY, second.status)
+        self.assertEqual([TimelineAction("undo")], controller.actions)
 
 
 if __name__ == "__main__":
