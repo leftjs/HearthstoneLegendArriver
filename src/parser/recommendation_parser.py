@@ -27,6 +27,9 @@ class RecommendationParser:
     _friendly_hero_targets = {"目标是己方英雄", "目标是我方英雄"}
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
     _discover = re.compile(r"^选择我方([1-4])号位卡牌$")
+    _timeline_undo = "回溯"
+    _timeline_keep = "维持"
+    _timeline_literals = ("回溯", "维持")
     _reference_a_headers = {"打法参考A", "打法参考Ａ"}
     _reference_b_headers = {"打法参考B", "打法参考Ｂ"}
 
@@ -57,6 +60,18 @@ class RecommendationParser:
             return self._build(
                 ocr, turn_number, log_revision,
                 ActionKind.MULLIGAN, mulligan_slots=())
+        timeline = [line for line in action_lines
+                    if line in self._timeline_literals]
+        if timeline:
+            # 回溯/维持是 HSAng 的独立时间线提示：只能单独出现。同面板再带其它
+            # 动作无法判定该点哪个，直接报歧义走重试，绝不猜。
+            if len(action_lines) != 1:
+                raise RecommendationParseError("ambiguous_actions")
+            token = timeline[0]
+            action = (ActionKind.TIMELINE_UNDO
+                      if token == self._timeline_undo
+                      else ActionKind.TIMELINE_KEEP)
+            return self._build(ocr, turn_number, log_revision, action)
         mulligans = [self._mulligan.fullmatch(line) for line in action_lines]
         if action_lines and all(match is not None for match in mulligans):
             slots = tuple(sorted({int(match.group(1)) for match in mulligans}))
@@ -228,7 +243,8 @@ class RecommendationParser:
                     or self._location.fullmatch(line)
                     or self._discover.fullmatch(line)
                     or line in {
-                        self._keep_all, "使用英雄技能", "结束回合"})
+                        self._keep_all, "使用英雄技能", "结束回合",
+                        self._timeline_undo, self._timeline_keep})
 
     def _optional_board_or_hero_target(self, lines, unsupported_code):
         target_lines = [line for line in lines if "目标" in line]
