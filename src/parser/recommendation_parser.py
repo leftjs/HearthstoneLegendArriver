@@ -125,20 +125,42 @@ class RecommendationParser:
                 elif friendly_hero_targets:
                     target = SlotRef("hero", "friendly")
             elif card_type == "MINION":
+                # 随从不一定只能带手牌目标：指向类战吼（如王室图书管理员
+                # 「沉默一个敌方随从」）会给出敌方场上/英雄目标；「己方N号位
+                # 随从」在适配层按卡牌 id 白名单区分是手牌选择还是己方场上随从。
+                enemy_board_targets = [
+                    match for line in lines
+                    if (match := self._target.fullmatch(line))
+                ]
                 hand_targets = [
                     match for line in lines
                     if (match := self._friendly_hand_target.fullmatch(line))
                 ]
+                enemy_hero_targets = sum(
+                    line in self._enemy_hero_targets for line in lines)
+                friendly_hero_targets = sum(
+                    line in self._friendly_hero_targets for line in lines)
                 target_lines = [line for line in lines if "目标" in line]
                 if len(target_lines) > 1:
                     raise RecommendationParseError("ambiguous_target")
-                if target_lines and len(hand_targets) != 1:
+                target_count = (
+                    len(enemy_board_targets) + len(hand_targets)
+                    + enemy_hero_targets + friendly_hero_targets)
+                if target_lines and target_count != 1:
                     raise RecommendationParseError(
                         "targeted_action_unsupported")
                 if hand_targets:
                     target = SlotRef(
                         "hand_slot", "friendly",
                         int(hand_targets[0].group(1)))
+                elif enemy_board_targets:
+                    target = SlotRef(
+                        "board_slot", "enemy",
+                        int(enemy_board_targets[0].group(1)))
+                elif enemy_hero_targets:
+                    target = SlotRef("hero", "enemy")
+                elif friendly_hero_targets:
+                    target = SlotRef("hero", "friendly")
             else:
                 self._reject_target_lines(lines)
             destinations = [self._destination.fullmatch(line) for line in lines]

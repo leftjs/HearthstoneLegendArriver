@@ -142,39 +142,53 @@ def _adapt_play_card(proposed, state):
         if not 0 <= gap <= board_count:
             raise RecommendationStateError("minion_destination_out_of_range")
     if proposed.target is not None:
-        if (card.card_id in FRIENDLY_HAND_TARGET_CARD_IDS
-                and proposed.target.owner == "friendly"
-                and proposed.target.kind == "hand_slot"):
-            target_index = proposed.target.index - 1
-            if not 0 <= target_index < len(state.my_hand_cards):
-                raise RecommendationStateError("hand_target_out_of_range")
-            if target_index == index:
-                raise RecommendationStateError("hand_target_is_source")
-            target_card = state.my_hand_cards[target_index]
-            target_id = getattr(target_card, "entity_id", None)
-            manual_target = Target(
-                "friendly", "hand", target_index, target_id)
-        elif proposed.card_type == "SPELL":
-            if proposed.target.owner not in {"friendly", "enemy"}:
-                raise RecommendationStateError("spell_target_unsupported")
-            if proposed.target.kind == "hero":
-                hero = (getattr(state, "my_hero", None)
-                        if proposed.target.owner == "friendly"
-                        else getattr(state, "oppo_hero", None))
-                if hero is None:
-                    raise RecommendationStateError("spell_target_missing")
-                target_id = getattr(hero, "entity_id", None)
+        kind = proposed.target.kind
+        owner = proposed.target.owner
+        if kind == "hand_slot":
+            # 随从的「己方N号位随从」目标按卡牌 id 区分：
+            #   白名单（从手牌选择的增益/特效战吼）→ 目标是手牌位 N；
+            #   非白名单（王室图书管理员这类能指向己方场上随从的战吼）→
+            #   目标是己方场上 N 号位随从。
+            if owner != "friendly" or card.cardtype != "MINION":
+                raise RecommendationStateError("targeted_action_unsupported")
+            if card.card_id in FRIENDLY_HAND_TARGET_CARD_IDS:
+                target_index = proposed.target.index - 1
+                if not 0 <= target_index < len(state.my_hand_cards):
+                    raise RecommendationStateError("hand_target_out_of_range")
+                if target_index == index:
+                    raise RecommendationStateError("hand_target_is_source")
+                target_card = state.my_hand_cards[target_index]
+                target_id = getattr(target_card, "entity_id", None)
                 manual_target = Target(
-                    proposed.target.owner, "hero", None, target_id)
+                    "friendly", "hand", target_index, target_id)
             else:
                 target = board_slot(
-                    state, proposed.target.owner, proposed.target.index)
+                    state, "friendly", proposed.target.index)
                 if target.kind != "minion":
                     raise RecommendationStateError("target_not_minion")
                 target_id = getattr(target.entity, "entity_id", None)
                 manual_target = Target(
-                    proposed.target.owner, "minion",
+                    "friendly", "minion",
                     target.collection_index, target_id)
+        elif (card.cardtype in ("SPELL", "MINION")
+                and kind in ("hero", "board_slot")):
+            if owner not in {"friendly", "enemy"}:
+                raise RecommendationStateError("target_side_unsupported")
+            if kind == "hero":
+                hero = (getattr(state, "my_hero", None)
+                        if owner == "friendly"
+                        else getattr(state, "oppo_hero", None))
+                if hero is None:
+                    raise RecommendationStateError("target_hero_missing")
+                target_id = getattr(hero, "entity_id", None)
+                manual_target = Target(owner, "hero", None, target_id)
+            else:
+                target = board_slot(state, owner, proposed.target.index)
+                if target.kind != "minion":
+                    raise RecommendationStateError("target_not_minion")
+                target_id = getattr(target.entity, "entity_id", None)
+                manual_target = Target(
+                    owner, "minion", target.collection_index, target_id)
         else:
             raise RecommendationStateError("targeted_action_unsupported")
     manual = PlayCardAction(
