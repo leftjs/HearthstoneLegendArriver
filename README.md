@@ -63,7 +63,10 @@
 - 装完在 PowerShell 运行 `python --version` 验证。
 
 ### 2. 用清华 TUNA 镜像安装依赖
-在项目根目录打开 PowerShell，运行：
+**请把项目源代码下载到一个没有中文字符的路径下**
+**请把项目源代码下载到一个没有中文字符的路径下**
+**请把项目源代码下载到一个没有中文字符的路径下**
+在项目根目录右键打开 PowerShell，运行：
 ```text
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
@@ -71,6 +74,12 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 3. 启动
 - **以管理员身份**运行：
+  win键搜索powershell，右键管理员身份运行，复制项目根目录的**绝对路径**（如果不会请找AI帮忙），输入以下命令
+```text
+cd 项目根目录
+```
+powershell进入根目录以后输入
+
 ```text
 python web_ui.py
 ```
