@@ -63,9 +63,18 @@ class RecommendationParser:
         timeline = [line for line in action_lines
                     if line in self._timeline_literals]
         if timeline:
-            # 回溯/维持是 HSAng 的独立时间线提示：只能单独出现。同面板再带其它
-            # 动作无法判定该点哪个，直接报歧义走重试，绝不猜。
-            if len(action_lines) != 1:
+            # HSAng 时间线提示出现时，上一句「打出N号位随从」往往还挂在面板上、
+            # 旁边再带一行「回溯/维持」（那张卡上一步已打出并消费，此行只是提示
+            # 去点时间线按钮）。因此允许时间线字与“单独一条打出动作”共存，共存的
+            # 打出不再执行，只点时间线按钮。以下情况无法判定，报歧义走重试不猜：
+            #   * 回溯/维持 两个字同时出现；
+            #   * 时间线字与打出以外的其它动作共存。
+            if len(timeline) > 1:
+                raise RecommendationParseError("ambiguous_actions")
+            other = [line for line in action_lines
+                     if line not in self._timeline_literals]
+            if other and (len(other) != 1
+                          or self._play.fullmatch(other[0]) is None):
                 raise RecommendationParseError("ambiguous_actions")
             token = timeline[0]
             action = (ActionKind.TIMELINE_UNDO

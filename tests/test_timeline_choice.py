@@ -56,9 +56,19 @@ class TimelineParserTests(unittest.TestCase):
         self.assertEqual(ActionKind.TIMELINE_KEEP, proposed.action)
         self.assertEqual("维持", proposed.normalized_instruction)
 
-    def test_timeline_mixed_with_another_action_is_ambiguous(self):
-        # 同面板出现其它动作无法判定点哪个，报歧义走重试，绝不猜。
-        for text in ("回溯\n打出1号位随从", "维持\n锻造2号位卡牌"):
+    def test_timeline_coexists_with_the_pending_play_line(self):
+        # 弹框时上一句「打出N号位随从」还挂着、旁边带一行时间线字：
+        # 那张卡上一步已打出并消费，这次只点时间线按钮，不再执行打出。
+        for text, expected in (("打出1号位随从\n维持", ActionKind.TIMELINE_KEEP),
+                               ("打出1号位随从\n回溯", ActionKind.TIMELINE_UNDO)):
+            with self.subTest(text=text):
+                proposed = self._parse(text)
+                self.assertEqual(expected, proposed.action)
+
+    def test_timeline_mixed_with_non_play_action_is_ambiguous(self):
+        # 与打出以外的动作共存无法判定点哪个，报歧义走重试，绝不猜。
+        for text in ("维持\n结束回合", "回溯\n锻造2号位卡牌",
+                     "回溯\n维持", "维持\n打出1号位随从\n打出2号位随从"):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(
                         RecommendationParseError, "ambiguous_actions"):
@@ -285,6 +295,20 @@ class TimelineFlowTests(unittest.TestCase):
         self.assertIn("waiting_recommendation_update", result.diagnostics)
         self.assertEqual(
             [TimelineAction("keep")], controller.actions)
+
+    def test_pending_play_line_with_keep_only_clicks_keep_once(self):
+        # 面板「打出…还挂着 + 维持」：打出上一步已消费，本次只点一次维持，
+        # 不重打、也不因文字再次变化而重复点击。
+        flow, controller = self._step("打出1号位随从\n维持")
+
+        result = flow.run_player_turn_step()
+
+        self.assertEqual(FlowStepStatus.OBSERVE, result.status)
+        self.assertEqual([TimelineAction("keep")], controller.actions)
+
+        second = flow.run_player_turn_step()
+        self.assertEqual(FlowStepStatus.RETRY, second.status)
+        self.assertEqual([TimelineAction("keep")], controller.actions)
 
 
 if __name__ == "__main__":
