@@ -1,13 +1,74 @@
 """Command-line control for mulligan and player-turn actions."""
 
 from dataclasses import dataclass, replace
+import json
+import os
+import re
 import sys
 import threading
 import time
 from typing import Callable, Optional, Union
 
 
-FRIENDLY_HAND_TARGET_CARD_IDS = frozenset({"CATA_490", "CATA_563"})
+def _clean_card_text(text):
+    """去掉 HTML 标签并折叠空白，方便按文本规则匹配卡牌效果。"""
+    return re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", text or ""))
+
+
+def _is_hand_pick_battlecry(card):
+    """规则：可收集的随从，战吼效果是“从自己手牌中选一张牌”。
+
+    HSAng 的“目标是我方X号位”对两类随从都可能是：从手牌里挑一张（本白名单，
+    会弹手牌选择框），或指定我方场上一名随从（如佐拉复制回手，目前不支持，
+    安全拒绝）。为免把后者误判成手牌选择，文本里选的是场上随从、或是随机/检视
+    这类不弹手牌选择框的，一律不收录。
+    """
+    if card.get("type") != "MINION" or not card.get("collectible"):
+        return False
+    text = _clean_card_text(card.get("text"))
+    if "选择" not in text or not ("手牌中" in text or "你的手牌" in text):
+        return False
+    if ("选择一个随从" in text or "选择一个友方随从" in text
+            or "选择一条友方的龙" in text or "选择一个敌方随从" in text
+            or "检视" in text):
+        return False
+    if ("随机选择" in text or "手牌中随机" in text
+            or "随机从你的手牌" in text or "从中随机" in text
+            or "随机一个随从" in text or "随机将你手牌" in text):
+        return False
+    return True
+
+
+def _generate_friendly_hand_target_card_ids():
+    """按上述规则从 cards.json 生成名单；每次生成完打印命中的卡及 id。
+
+    读的是随仓库分发的本地 cards.json（与 __file__ 同目录），缺失/损坏时退回
+    内置名单且不联网下载，避免 import 阶段卡在网络上。
+    """
+    fallback = frozenset({"CATA_490", "CATA_563"})
+    cards_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "cards.json")
+    try:
+        with open(cards_path, "r", encoding="utf-8") as cards_file:
+            cards = json.load(cards_file)
+    except Exception as exc:
+        print(f"[手牌目标] 读取 {cards_path} 失败，退回内置名单："
+              f"{type(exc).__name__}: {exc}")
+        return fallback
+    matched = sorted(
+        (card["id"], card["name"]) for card in cards
+        if _is_hand_pick_battlecry(card))
+    if not matched:
+        print("[手牌目标] 按规则过滤结果为空，退回内置名单")
+        return fallback
+    print(f"[手牌目标] 由 cards.json 生成手牌目标随从白名单"
+          f"（{len(matched)} 张）：")
+    for card_id, name in matched:
+        print(f"[手牌目标]   {card_id} {name}")
+    return frozenset(card_id for card_id, _ in matched)
+
+
+FRIENDLY_HAND_TARGET_CARD_IDS = _generate_friendly_hand_target_card_ids()
 
 
 class GlobalHotkeyInput:
