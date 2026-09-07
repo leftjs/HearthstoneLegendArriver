@@ -103,7 +103,7 @@ def adapt_action(proposed, state):
                              target_id, "location_changed")
     if proposed.action == ActionKind.CHOOSE_DISCOVER:
         choice_count = getattr(state, "discover_choice_count", None)
-        if choice_count not in (1, 2, 3):
+        if choice_count not in (1, 2, 3, 4):
             raise RecommendationStateError("discover_choice_count_unavailable")
         if (proposed.source is None
                 or proposed.source.kind != "discover_slot"
@@ -136,7 +136,7 @@ def _adapt_play_card(proposed, state):
     if proposed.target is not None:
         if (card.card_id in FRIENDLY_HAND_TARGET_CARD_IDS
                 and proposed.target.owner == "friendly"
-                and proposed.target.kind == "hand_slot"):
+                and proposed.target.kind in {"hand_slot", "board_slot"}):
             target_index = proposed.target.index - 1
             if not 0 <= target_index < len(state.my_hand_cards):
                 raise RecommendationStateError("hand_target_out_of_range")
@@ -146,19 +146,21 @@ def _adapt_play_card(proposed, state):
             target_id = getattr(target_card, "entity_id", None)
             manual_target = Target(
                 "friendly", "hand", target_index, target_id)
-        elif proposed.card_type == "SPELL":
+        elif proposed.card_type in {"SPELL", "MINION"}:
+            target_error = ("spell_target" if proposed.card_type == "SPELL"
+                            else "minion_target")
             if proposed.target.owner not in {"friendly", "enemy"}:
-                raise RecommendationStateError("spell_target_unsupported")
+                raise RecommendationStateError(f"{target_error}_unsupported")
             if proposed.target.kind == "hero":
                 hero = (getattr(state, "my_hero", None)
                         if proposed.target.owner == "friendly"
                         else getattr(state, "oppo_hero", None))
                 if hero is None:
-                    raise RecommendationStateError("spell_target_missing")
+                    raise RecommendationStateError(f"{target_error}_missing")
                 target_id = getattr(hero, "entity_id", None)
                 manual_target = Target(
                     proposed.target.owner, "hero", None, target_id)
-            else:
+            elif proposed.target.kind == "board_slot":
                 target = board_slot(
                     state, proposed.target.owner, proposed.target.index)
                 if target.kind != "minion":
@@ -167,6 +169,8 @@ def _adapt_play_card(proposed, state):
                 manual_target = Target(
                     proposed.target.owner, "minion",
                     target.collection_index, target_id)
+            else:
+                raise RecommendationStateError(f"{target_error}_unsupported")
         else:
             raise RecommendationStateError("targeted_action_unsupported")
     manual = PlayCardAction(

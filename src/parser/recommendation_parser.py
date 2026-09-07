@@ -26,7 +26,8 @@ class RecommendationParser:
     _enemy_hero_targets = {"目标是对方英雄", "目标是敌方英雄"}
     _friendly_hero_targets = {"目标是己方英雄", "目标是我方英雄"}
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
-    _discover = re.compile(r"^选择我方([1-3])号位卡牌$")
+    _discover = re.compile(
+        r"^(?:选择我方([1-4])号位卡牌|选(?:择)?第([1-4])个选项)$")
     _reference_a_headers = {"打法参考A", "打法参考Ａ"}
     _reference_b_headers = {"打法参考B", "打法参考Ｂ"}
 
@@ -107,20 +108,10 @@ class RecommendationParser:
                 elif friendly_hero_targets:
                     target = SlotRef("hero", "friendly")
             elif card_type == "MINION":
-                hand_targets = [
-                    match for line in lines
-                    if (match := self._friendly_hand_target.fullmatch(line))
-                ]
-                target_lines = [line for line in lines if "目标" in line]
-                if len(target_lines) > 1:
-                    raise RecommendationParseError("ambiguous_target")
-                if target_lines and len(hand_targets) != 1:
-                    raise RecommendationParseError(
-                        "targeted_action_unsupported")
-                if hand_targets:
-                    target = SlotRef(
-                        "hand_slot", "friendly",
-                        int(hand_targets[0].group(1)))
+                # Card identity in the adapter disambiguates the special
+                # battlecries whose friendly slot actually means a hand card.
+                target = self._optional_board_or_hero_target(
+                    lines, "unsupported_minion_target")
             else:
                 self._reject_target_lines(lines)
             destinations = [self._destination.fullmatch(line) for line in lines]
@@ -158,7 +149,7 @@ class RecommendationParser:
             return self._build(
                 ocr, turn_number, log_revision, ActionKind.CHOOSE_DISCOVER,
                 source=SlotRef("discover_slot", "friendly",
-                               int(discover.group(1))))
+                               int(discover.group(1) or discover.group(2))))
 
         attack = self._minion_attack.fullmatch(primary)
         hero_attack = self._hero_attack.fullmatch(primary)

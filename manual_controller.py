@@ -528,7 +528,7 @@ class ManualController:
             if value == 15:
                 choice_count = getattr(
                     state, "discover_choice_count", 0)
-                if choice_count not in (1, 2, 3):
+                if choice_count not in (1, 2, 3, 4):
                     self.output("当前没有发现选择。")
                     continue
                 while True:
@@ -844,7 +844,7 @@ class ManualController:
             return ActionExecutionResult(True, "已使用英雄技能。")
 
         if isinstance(action, DiscoverChoiceAction):
-            if (action.choice_count not in (1, 2, 3)
+            if (action.choice_count not in (1, 2, 3, 4)
                     or not 0 <= action.choice_index < action.choice_count):
                 return self._reject("发现选项位置已经失效，未执行操作。")
             self.executor.choose_discover_card(

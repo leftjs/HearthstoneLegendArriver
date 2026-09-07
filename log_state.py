@@ -130,7 +130,7 @@ class LogState:
                 or self.general_choice_player != self.my_player_id):
             return None
         count = len(self.general_choice_indexes)
-        return count if 1 <= count <= 3 else None
+        return count if 1 <= count <= 4 else None
 
     def clear_general_choice(self):
         self.general_choice_id = None
