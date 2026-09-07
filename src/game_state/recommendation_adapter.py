@@ -191,10 +191,32 @@ def _adapt_play_card(proposed, state):
                     owner, "minion", target.collection_index, target_id)
         else:
             raise RecommendationStateError("targeted_action_unsupported")
+    sub_option_index = None
+    sub_option_count = None
+    if proposed.choice_card_name is not None:
+        # 抉择(choose-one)法术：盒子与「打出N号位法术」同帧给出分支名。当前只支持
+        # 无目标/无落点的法术；分支数由 Power.log 的 SETASIDE 子选项卡权威给出，
+        # 分支名在有序子卡里命中的位置 == 面板里从左到右的号位(用户实测 0 在左)。
+        if (card.cardtype != "SPELL" or proposed.target is not None
+                or proposed.destination is not None):
+            raise RecommendationStateError("choose_one_unsupported")
+        children = state.sub_options_by_parent.get(
+            getattr(card, "entity_id", None), ())
+        if not children:
+            raise RecommendationStateError("sub_options_unavailable")
+        for position, child in enumerate(children):
+            if child.name == proposed.choice_card_name:
+                sub_option_index = position
+                break
+        if sub_option_index is None:
+            raise RecommendationStateError("sub_option_not_found")
+        sub_option_count = len(children)
     manual = PlayCardAction(
         index, card.card_id, card.cardtype, gap_index=gap,
         target=manual_target,
-        hand_entity_id=getattr(card, "entity_id", None))
+        hand_entity_id=getattr(card, "entity_id", None),
+        sub_option_index=sub_option_index,
+        sub_option_count=sub_option_count)
     return AdaptedAction(
         manual, getattr(card, "entity_id", None), target_id,
                          "hand_card_left")

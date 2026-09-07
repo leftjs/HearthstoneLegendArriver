@@ -1,7 +1,24 @@
 """Build a user-facing game snapshot from parsed Power.log state."""
 
 from constants.constants import DEBUG_PRINT
+from json_op import query_json_dict
 from print_info import debug_print
+
+
+class SubOptionCard:
+    """抉择(choose-one)父卡的一种子选项卡(SETASIDE 子实体)。
+
+    实体只记录 id 与 card_id；名称按需经 cards.json 解析(query_json_dict)，
+    构建 StrategyState 时不触发卡库读取。
+    """
+
+    def __init__(self, entity_id, card_id):
+        self.entity_id = entity_id
+        self.card_id = card_id
+
+    @property
+    def name(self):
+        return query_json_dict(self.card_id)
 
 
 class StrategyState:
@@ -31,6 +48,8 @@ class StrategyState:
         self.hand_entry_count = log_state.hand_entry_count
         self.start_of_game_card_count = getattr(
             log_state, "start_of_game_card_count", 0)
+        # 抉择子选项：父实体 id -> 有序 SubOptionCard 列表（屏幕左到右）。
+        self.sub_options_by_parent = {}
 
         for entity_id, entity in log_state.entity_dict.items():
             if not hasattr(entity, "generate_strategy_entity"):
@@ -78,6 +97,27 @@ class StrategyState:
         self.my_hand_cards.sort(key=lambda item: item.zone_pos)
         self.my_locations.sort(key=lambda item: item.zone_pos)
         self.oppo_locations.sort(key=lambda item: item.zone_pos)
+
+        # 抉择子选项常驻 SETASIDE：按 PARENT_CARD 分到父卡名下。游戏引擎按
+        # subOption 顺序创建这些子实体，故实体 id 升序 == 弹出面板里从左到右的
+        # 顺序（用户实测 森林之灵 的 subOption0=群狼的力量 在最左 x≈760）。
+        # 非空 card_id 过滤掉机制占位实体；SETASIDE 里的普通衍生(战吼召唤等)不会
+        # 常驻，此刻读到的都是正待选的分支卡。
+        for entity_id, entity in log_state.entity_dict.items():
+            if entity.query_tag("ZONE") != "SETASIDE":
+                continue
+            if not log_state.is_my_entity(entity):
+                continue
+            parent = entity.query_tag("PARENT_CARD")
+            if parent in ("", "0"):
+                continue
+            card_id = getattr(entity, "card_id", "")
+            if not card_id:
+                continue
+            self.sub_options_by_parent.setdefault(parent, []).append(
+                SubOptionCard(entity_id, card_id))
+        for children in self.sub_options_by_parent.values():
+            children.sort(key=lambda child: int(child.entity_id))
 
     @property
     def my_last_mana(self):

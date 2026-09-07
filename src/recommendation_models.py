@@ -73,6 +73,10 @@ class ProposedAction:
     target: Optional[SlotRef] = None
     mulligan_slots: tuple[int, ...] = ()
     card_type: Optional[str] = None
+    # 抉择(choose-one)等：同一帧里盒子随「打出N号位法术」给出要选的分支卡名
+    # （如 选择卡牌\n群狼的力量）。名字只作跨层传递，由适配层在 Power.log 暴露的
+    # 子选项卡里解析成屏幕号位。
+    choice_card_name: Optional[str] = None
     ocr_confidence: float = 0.0
     semantic_confidence: float = 0.0
 

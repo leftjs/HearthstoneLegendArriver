@@ -27,6 +27,10 @@ class RecommendationParser:
     _friendly_hero_targets = {"目标是己方英雄", "目标是我方英雄"}
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
     _discover = re.compile(r"^选择我方([1-4])号位卡牌$")
+    # 抉择(choose-one)法术的 by-name 选择提示。HSAng 在「打出N号位法术」同一帧里
+    # 追加要选的分支：先一行「选择卡牌」，下一行是分支卡名（如 群狼的力量），也可能
+    # 合成一行「选择卡牌：群狼的力量」。
+    _choose_by_name = re.compile(r"^选择卡牌(?:[:：](.*))?$")
     # HSAng 时间线提示字：按钮文案可能是纯「回溯/维持」，也可能是带标题的
     # 「回溯时间线/维持时间线」（OCR 也可能把两者读成「回溯」+「时间线」两行，
     # 其中「时间线」非动作行会被过滤，只剩「回溯」）。
@@ -47,11 +51,34 @@ class RecommendationParser:
             or line in parser._enemy_hero_targets
             or "目标" in line
         ]
+        # 抉择(choose-one)：保留「选择卡牌」及其分支卡名。这条归一化同时被 OCR
+        # 读取器当面板规范文本用(FSM_action 里 text_normalizer)，若这里不保留，
+        # 分支名在到达 parse() 前就已被过滤掉，抉择无从选起。
+        for extra in parser._choose_lines_to_retain(lines):
+            if extra not in retained:
+                retained.append(extra)
         return "\n".join(retained)
+
+    def _choose_lines_to_retain(self, lines):
+        extras = []
+        for index, line in enumerate(lines):
+            match = self._choose_by_name.fullmatch(line)
+            if match is None:
+                continue
+            extras.append(line)
+            if (match.group(1) or "").strip():
+                continue
+            if index + 1 < len(lines) and not self._is_action_line(
+                    lines[index + 1]):
+                extras.append(lines[index + 1])
+        return extras
 
     def parse(self, ocr, turn_number, log_revision):
         action_text = self.normalize_action_text(ocr.normalized_text)
         lines = self._lines(action_text)
+        # 抉择分支名经 normalize_action_text 已随「选择卡牌」保留下来(reader 与
+        # 这里用同一条归一化)，从规范文本里找，与动作行顺序一致。
+        all_lines = self._reference_a_lines(ocr.normalized_text)
         if not lines:
             raise RecommendationParseError("empty_recommendation")
         action_lines = [line for line in lines if self._is_action_line(line)]
@@ -170,12 +197,16 @@ class RecommendationParser:
             destination = (SlotRef("board_slot", "friendly",
                                    int(destinations[0].group(1)))
                            if destinations else None)
+            build_kwargs = {"card_type": card_type}
+            choice_name = self._by_name_choice(all_lines)
+            if choice_name is not None:
+                build_kwargs["choice_card_name"] = choice_name
             return self._build(
                 ocr, turn_number, log_revision, ActionKind.PLAY_CARD,
                 source=SlotRef("hand_slot", "friendly", slot),
                 destination=destination,
                 target=target,
-                card_type=card_type)
+                **build_kwargs)
 
         trade = self._trade.fullmatch(primary)
         if trade:
@@ -241,6 +272,29 @@ class RecommendationParser:
         translation = str.maketrans("０１２３４５６７８９", "0123456789")
         return [line.strip().translate(translation) for line in text.splitlines()
                 if line.strip()]
+
+    def _by_name_choice(self, all_lines):
+        """Extract the 抉择 candidate name from a '选择卡牌<名>' block.
+
+        HSAng 会给两种写法：单独一行「选择卡牌」+ 下一行分支名，或同一行
+        「选择卡牌：分支名」。候选名不应是动作行（避免 OCR 错序时误把别行
+        当名字）。找不到返回 None。
+        """
+        for index, line in enumerate(all_lines):
+            match = self._choose_by_name.fullmatch(line)
+            if match is None:
+                continue
+            inline = (match.group(1) or "").strip()
+            if inline:
+                candidate = inline
+            elif index + 1 < len(all_lines):
+                candidate = all_lines[index + 1]
+            else:
+                return None
+            if not candidate or self._is_action_line(candidate):
+                return None
+            return candidate
+        return None
 
     def _reference_a_lines(self, text):
         lines = self._lines(text)

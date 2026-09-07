@@ -70,6 +70,10 @@ def _generate_friendly_hand_target_card_ids():
 
 FRIENDLY_HAND_TARGET_CARD_IDS = _generate_friendly_hand_target_card_ids()
 
+# 抉择(choose-one)法术：点手牌 -> 点棋盘中央把牌举起后，分支卡才居中弹出。
+# 点分支前的等动画时长(秒)。比普通随从战吼的目标等待略长，给弹出动画留时间。
+CHOOSE_ONE_PANEL_DELAY = 0.8
+
 
 class GlobalHotkeyInput:
     """Collect numeric commands globally while Hearthstone stays focused."""
@@ -198,6 +202,11 @@ class PlayCardAction:
     gap_index: Optional[int] = None
     target: Optional[Target] = None
     hand_entity_id: Optional[str] = None
+    # 抉择(choose-one)法术：打出后要在居中弹出面板里选一张分支卡。
+    # sub_option_index 是面板里从左到右的号位(0 起)，sub_option_count 是分支总数
+    # (即弹出几张)，二者都非 None 时走 play_choose_one_spell 而非普通法术施放。
+    sub_option_index: Optional[int] = None
+    sub_option_count: Optional[int] = None
     turn_number: Optional[int] = None
 
 
@@ -392,6 +401,23 @@ class ClickExecutor:
             self.click.choose_card(hand_index, hand_count)
             self._click_target(target, my_count, oppo_count)
         self.click.cancel_click()
+
+    def play_choose_one_spell(self, hand_index, hand_count, option_index,
+                              option_count):
+        return self._safe_action(lambda: self._play_choose_one_spell(
+            hand_index, hand_count, option_index, option_count))
+
+    def _play_choose_one_spell(self, hand_index, hand_count, option_index,
+                               option_count):
+        # 抉择法术不能像普通法术那样"选牌后点中央施放"——点中央只把牌举起，
+        # 分支卡才居中弹出；再点目标分支卡才算真正施放。
+        if hand_count <= 2:
+            # 手牌很少时扇形会明显重排，先等牌到位再选(与普通法术一致)。
+            self.sleep(0.3)
+        self.click.choose_card(hand_index, hand_count)
+        self.click.click_middle()
+        self.sleep(CHOOSE_ONE_PANEL_DELAY)
+        self.click.choose_discover_card(option_index, option_count)
 
     def play_location(self, hand_index, hand_count, gap_index,
                       board_slot_count):
@@ -880,12 +906,24 @@ class ManualController:
                     self._target_for_click(action.target, state),
                 )
             elif action.cardtype == "SPELL":
-                self.executor.play_spell(
-                    action.hand_index, len(state.my_hand_cards),
-                    self._target_for_click(action.target, state),
-                    self._board_slot_count(state, "friendly"),
-                    self._board_slot_count(state, "enemy"),
-                )
+                if action.sub_option_index is not None:
+                    if (action.target is not None
+                            or action.sub_option_count is None
+                            or action.sub_option_count not in (1, 2, 3, 4)
+                            or not 0 <= action.sub_option_index
+                            < action.sub_option_count):
+                        return self._reject(
+                            "抉择法术分支参数无效，未执行操作。")
+                    self.executor.play_choose_one_spell(
+                        action.hand_index, len(state.my_hand_cards),
+                        action.sub_option_index, action.sub_option_count)
+                else:
+                    self.executor.play_spell(
+                        action.hand_index, len(state.my_hand_cards),
+                        self._target_for_click(action.target, state),
+                        self._board_slot_count(state, "friendly"),
+                        self._board_slot_count(state, "enemy"),
+                    )
             elif action.cardtype == "WEAPON":
                 self.executor.play_weapon(action.hand_index,
                                           len(state.my_hand_cards))
