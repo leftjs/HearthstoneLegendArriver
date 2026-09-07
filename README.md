@@ -191,7 +191,7 @@ AAEBAa35AwaPggPV0QP5xgXxoQb2oQbGsgcMzge1uQPQ4QOYkgWrkgWVygbXlweEmQekrQfWvgfZvgfP
 
 ## ⚠️ Disclaimer
 
-本项目仅用于 **技术研究与代码交流**。本团队声明反对长期滥用脚本的行为。
+本项目仅用于 **技术研究与代码交流**。本团队声明反对长期滥用脚本的行为，严禁将此开源项目用于商业用途。
 
 ---
 
