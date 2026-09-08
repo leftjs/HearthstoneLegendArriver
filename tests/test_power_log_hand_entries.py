@@ -99,6 +99,8 @@ class PowerLogHandEntryTests(unittest.TestCase):
             game_num_turns_in_play=3,
             my_entity=my_entity,
             discover_choice_count=None,
+            my_player_id="1",
+            power_options={},
             entity_dict={},
         )
 

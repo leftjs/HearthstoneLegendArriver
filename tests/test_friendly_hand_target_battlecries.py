@@ -104,7 +104,7 @@ class FriendlyHandTargetBattlecryTests(unittest.TestCase):
                     ("choose_card", 2, 3),
                     ("cancel_click",),
                 ], clicks.events)
-                self.assertEqual([0.8], sleeps)
+                self.assertEqual([0.9], sleeps)
 
     def test_cata_563_rejects_out_of_range_hand_target(self):
         state = SimpleNamespace(

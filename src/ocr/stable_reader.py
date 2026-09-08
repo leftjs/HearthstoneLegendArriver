@@ -107,6 +107,11 @@ class StableRecommendationReader:
         for line in evidence.lines:
             normalized_line = self.text_normalizer(line.text)
             parts = normalized_line.splitlines()
+            # A card name is retained only after the contextual '选择卡牌'
+            # marker; normalizing that OCR line alone deliberately drops it.
+            if (not parts and expected_index > 0
+                    and expected_lines[expected_index - 1] == "选择卡牌"):
+                parts = self._normalize(line.text).splitlines()
             if not parts:
                 continue
             if (expected_lines[expected_index:

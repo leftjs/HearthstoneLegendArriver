@@ -138,6 +138,7 @@ class PlayCardAction:
     target: Optional[Target] = None
     hand_entity_id: Optional[str] = None
     turn_number: Optional[int] = None
+    choose_one: Optional["DiscoverChoiceAction"] = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,7 @@ class TradeCardAction:
 class HeroPowerAction:
     target: Optional[Target] = None
     turn_number: Optional[int] = None
+    choose_one: Optional["DiscoverChoiceAction"] = None
 
 
 @dataclass(frozen=True)
@@ -259,24 +261,27 @@ class ClickExecutor:
             self.click.choose_opponent_minion(target.index, oppo_count)
 
     def play_minion(self, hand_index, hand_count, gap_index, minion_count,
-                    oppo_minion_count, target):
+                    oppo_minion_count, target, choose_one=None):
         return self._safe_action(lambda: self._play_minion(
             hand_index, hand_count, gap_index, minion_count,
-            oppo_minion_count, target))
+            oppo_minion_count, target, choose_one))
 
     def _play_minion(self, hand_index, hand_count, gap_index, minion_count,
-                     oppo_minion_count, target):
+                     oppo_minion_count, target, choose_one=None):
         # Keep the recommended placement even on a full board: the game
         # can resolve it as a Magnetic merge without adding a board slot.
+        if choose_one is not None:
+            self.click.cancel_click()
         self.click.choose_card(hand_index, hand_count)
         self.click.put_minion(gap_index, minion_count)
+        self._select_choose_one(choose_one)
         # Let the board fan-out settle briefly before clicking the target.
         if target is not None:
             # Supported battlecry hand targets appear later than ordinary
             # minion targets, so wait for that UI to settle.
             is_friendly_hand_target = (
                 target.side == "friendly" and target.kind == "hand")
-            self.sleep(0.8 if is_friendly_hand_target else 0.3)
+            self.sleep(0.9 if is_friendly_hand_target else 0.4)
         if target is not None:
             adjusted = target
             if target.side == "friendly" and target.kind == "hand":
@@ -297,13 +302,23 @@ class ClickExecutor:
         self.click.cancel_click()
 
     def play_spell(self, hand_index, hand_count, target, my_count,
-                   oppo_count):
+                   oppo_count, choose_one=None):
         return self._safe_action(lambda: self._play_spell(
-            hand_index, hand_count, target, my_count, oppo_count))
+            hand_index, hand_count, target, my_count, oppo_count, choose_one))
 
     def _play_spell(self, hand_index, hand_count, target, my_count,
-                    oppo_count):
-        if target is None:
+                    oppo_count, choose_one=None):
+        if choose_one is not None:
+            # Cancel a previous incomplete Choose One attempt before reopening
+            # it. No cancel may occur between opening and choosing the option.
+            self.click.cancel_click()
+            self.click.choose_card(hand_index, hand_count)
+            self.click.click_middle()
+            self._select_choose_one(choose_one)
+            if target is not None:
+                self.sleep(0.3)
+                self._click_target(target, my_count, oppo_count)
+        elif target is None:
             if hand_count <= 2:
                 # With a nearly empty hand, the fan re-centers noticeably.
                 # Let the cards reach their final positions before selecting.
@@ -368,17 +383,31 @@ class ClickExecutor:
         self.click.choose_card(hand_index, hand_count)
         self.click.drag_card_to_deck()
 
-    def use_hero_power(self, target=None, my_count=0, oppo_count=0):
+    def use_hero_power(self, target=None, my_count=0, oppo_count=0, choose_one=None):
         return self._safe_action(lambda: self._use_hero_power(
-            target, my_count, oppo_count))
+            target, my_count, oppo_count, choose_one))
 
-    def _use_hero_power(self, target, my_count, oppo_count):
+    def _use_hero_power(self, target, my_count, oppo_count, choose_one=None):
+        if choose_one is not None:
+            self.click.cancel_click()
+            self.click.click_skill()
+            self._select_choose_one(choose_one)
+            if target is not None:
+                self.sleep(0.3)
+                self._click_target(target, my_count, oppo_count)
+            self.click.cancel_click()
+            return
         if target is None:
             self.click.use_skill_no_point()
             return
         self.click.click_skill()
         self._click_target(target, my_count, oppo_count)
         self.click.cancel_click()
+
+    def _select_choose_one(self, choice):
+        if choice is not None:
+            self.sleep(0.3)
+            self.click.choose_discover_card(choice.choice_index, choice.choice_count)
 
     def choose_discover_card(self, choice_index, choice_count):
         return self._safe_action(
@@ -782,6 +811,8 @@ class ManualController:
             elif not self._target_exists(action.target, state):
                 return self._reject("目标已经不存在，未执行操作。")
 
+            choice_args = ({"choose_one": action.choose_one}
+                           if action.choose_one is not None else {})
             if action.cardtype == "MINION":
                 my_board_count = self._board_slot_count(state, "friendly")
                 oppo_board_count = self._board_slot_count(state, "enemy")
@@ -793,6 +824,7 @@ class ManualController:
                     action.gap_index, my_board_count,
                     oppo_board_count,
                     self._target_for_click(action.target, state),
+                    **choice_args,
                 )
             elif action.cardtype == "SPELL":
                 self.executor.play_spell(
@@ -800,6 +832,7 @@ class ManualController:
                     self._target_for_click(action.target, state),
                     self._board_slot_count(state, "friendly"),
                     self._board_slot_count(state, "enemy"),
+                    **choice_args,
                 )
             elif action.cardtype == "WEAPON":
                 self.executor.play_weapon(action.hand_index,
@@ -828,8 +861,10 @@ class ManualController:
             return ActionExecutionResult(True, f"已执行手牌：{selected.name}")
 
         if isinstance(action, HeroPowerAction):
+            choice_args = ({"choose_one": action.choose_one}
+                           if action.choose_one is not None else {})
             if action.target is None:
-                self.executor.use_hero_power()
+                self.executor.use_hero_power(**choice_args)
             else:
                 if not self._target_exists(action.target, state):
                     return self._reject(
@@ -838,6 +873,7 @@ class ManualController:
                     self._target_for_click(action.target, state),
                     self._board_slot_count(state, "friendly"),
                     self._board_slot_count(state, "enemy"),
+                    **choice_args,
                 )
             return ActionExecutionResult(True, "已使用英雄技能。")
 

@@ -34,6 +34,8 @@ class LogState:
         self.general_choice_player = None
         self.general_choice_indexes = set()
         self.general_choice_ready = False
+        self.power_options = {}
+        self.current_power_option_id = None
         # 手牌入口计数（上游逻辑：用于手牌动画延迟判断）。
         self.hand_entry_count = 0
         # 开局生效的全局卡数量（BLOCK_START TRIGGER + START_OF_GAME_KEYWORD
@@ -341,6 +343,23 @@ def update_state(state, line_info_container):
         card_id = getattr(entity, "card_id", "") if entity is not None else ""
         if card_id:
             state.start_of_game_card_count += 1
+
+    if line_info_container.line_type == LOG_LINE_POWER_OPTIONS_START:
+        state.power_options = {}
+        state.current_power_option_id = None
+
+    if line_info_container.line_type == LOG_LINE_POWER_OPTION:
+        info = line_info_container.info_dict
+        state.current_power_option_id = info.get("entity_id")
+        if state.current_power_option_id is not None:
+            state.power_options[state.current_power_option_id] = {
+                **info, "choices": {}}
+
+    if line_info_container.line_type == LOG_LINE_POWER_SUBOPTION:
+        parent = state.power_options.get(state.current_power_option_id)
+        if parent is not None:
+            info = line_info_container.info_dict
+            parent["choices"][info["index"]] = dict(info)
 
     if line_info_container.line_type == LOG_LINE_GENERAL_CHOICE_START:
         state.clear_general_choice()

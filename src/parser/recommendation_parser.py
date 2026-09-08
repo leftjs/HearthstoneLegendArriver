@@ -35,15 +35,17 @@ class RecommendationParser:
     def normalize_action_text(cls, text):
         parser = cls()
         lines = parser._reference_a_lines(text or "")
-        retained = [
-            line for line in lines
-            if parser._is_action_line(line)
-            or parser._destination.fullmatch(line)
-            or parser._target.fullmatch(line)
-            or parser._friendly_hand_target.fullmatch(line)
-            or line in parser._enemy_hero_targets
-            or "目标" in line
-        ]
+        retained = []
+        for index, line in enumerate(lines):
+            if (parser._is_action_line(line)
+                    or parser._destination.fullmatch(line)
+                    or parser._target.fullmatch(line)
+                    or parser._friendly_hand_target.fullmatch(line)
+                    or line in parser._enemy_hero_targets
+                    or "目标" in line
+                    or line == "选择卡牌"
+                    or (index > 0 and lines[index - 1] == "选择卡牌")):
+                retained.append(line)
         return "\n".join(retained)
 
     def parse(self, ocr, turn_number, log_revision):
@@ -251,10 +253,21 @@ class RecommendationParser:
     def _build(ocr, turn_number, log_revision, action, **kwargs):
         action_text = RecommendationParser.normalize_action_text(
             ocr.normalized_text)
+        lines = action_text.splitlines()
+        markers = [i for i, line in enumerate(lines) if line == "选择卡牌"]
+        choice_name = None
+        if markers and action in (ActionKind.PLAY_CARD, ActionKind.USE_HERO_POWER):
+            if len(markers) != 1 or markers[0] + 1 >= len(lines):
+                raise RecommendationParseError("choose_one_name_required")
+            choice_name = lines[markers[0] + 1]
+            if (RecommendationParser()._is_action_line(choice_name)
+                    or "目标" in choice_name or choice_name.startswith("放置于")):
+                raise RecommendationParseError("choose_one_name_required")
         return ProposedAction(
             action_id=f"action-{uuid.uuid4()}", frame_id=ocr.frame_id,
             created_at=time.time(), turn_number=turn_number,
             log_revision=log_revision, raw_instruction=action_text,
             normalized_instruction=action_text, action=action,
             ocr_confidence=ocr.confidence, semantic_confidence=1.0,
+            choice_name=choice_name,
             **kwargs)

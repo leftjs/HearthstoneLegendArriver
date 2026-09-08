@@ -80,6 +80,16 @@ GENERAL_CHOICE_RESOLVED_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
     r"GameState\.SendChoices\(\) - id=(\d+) ChoiceType=GENERAL$")
 
+# Choose One uses the playable action's subOptions, not GENERAL choices.
+POWER_OPTIONS_PATTERN = re.compile(
+    r"D \d{2}:\d{2}:\d{2}\.\d{7} GameState\.DebugPrintOptions\(\) - (.*)$")
+POWER_OPTION_PATTERN = re.compile(
+    r"\s+option \d+ type=\w+ mainEntity=(.*?) error=(\S+) errorParam=.*$")
+POWER_SUBOPTION_PATTERN = re.compile(
+    r"\s+subOption (\d+) entity=(.*?) error=(\S+) errorParam=.*$")
+OPTION_ENTITY_PATTERN = re.compile(
+    r"\[entityName=(.*?) id=(\d+) zone=\w+ zonePos=\d+ cardId=(\S*) player=(\d+)\]$")
+
 
 class LineInfoContainer:
     def __init__(self, line_type, **kwargs):
@@ -132,6 +142,25 @@ def fetch_entity_id(input_string):
 
 def parse_line(line_str):
     line_str = line_str.rstrip("\r\n")
+
+    options = POWER_OPTIONS_PATTERN.fullmatch(line_str)
+    if options:
+        body = options.group(1)
+        if re.fullmatch(r"id=\d+", body):
+            return LineInfoContainer(LOG_LINE_POWER_OPTIONS_START)
+        main = POWER_OPTION_PATTERN.fullmatch(body)
+        sub = POWER_SUBOPTION_PATTERN.fullmatch(body)
+        if main or sub:
+            descriptor = main.group(1) if main else sub.group(2)
+            entity = OPTION_ENTITY_PATTERN.fullmatch(descriptor)
+            fields = (dict(name=entity.group(1), entity_id=entity.group(2),
+                           card_id=entity.group(3), player=entity.group(4))
+                      if entity else {})
+            return LineInfoContainer(
+                LOG_LINE_POWER_OPTION if main else LOG_LINE_POWER_SUBOPTION,
+                index=None if main else int(sub.group(1)),
+                error=main.group(2) if main else sub.group(3), **fields)
+        return None
 
     match_obj = GENERAL_CHOICE_START_PATTERN.match(line_str)
     if match_obj is not None:

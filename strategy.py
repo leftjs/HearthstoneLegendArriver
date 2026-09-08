@@ -2,6 +2,7 @@
 
 from constants.constants import DEBUG_PRINT
 from print_info import debug_print
+from copy import deepcopy
 
 
 class StrategyState:
@@ -28,6 +29,8 @@ class StrategyState:
         self.oppo_weapon = None
         self.oppo_hand_card_num = 0
         self.discover_choice_count = log_state.discover_choice_count
+        self.my_player_id = log_state.my_player_id
+        self.power_options = deepcopy(log_state.power_options)
         self.hand_entry_count = log_state.hand_entry_count
         self.start_of_game_card_count = getattr(
             log_state, "start_of_game_card_count", 0)

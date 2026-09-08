@@ -1,6 +1,6 @@
 """Map display slots in HSAng instructions to identity-bound manual actions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from manual_controller import (
     AttackAction, DiscoverChoiceAction, EndTurnAction, HeroPowerAction,
@@ -8,6 +8,7 @@ from manual_controller import (
     Target, TradeCardAction, UseLocationAction,
 )
 from src.recommendation_models import ActionKind
+from src.game_state.choose_one import choose_one_card_ids
 
 
 class RecommendationStateError(ValueError):
@@ -56,11 +57,15 @@ def adapt_action(proposed, state):
     if proposed.turn_number != state.game_num_turns_in_play:
         raise RecommendationStateError("turn_changed")
     if proposed.action == ActionKind.PLAY_CARD:
-        return _adapt_play_card(proposed, state)
+        adapted = _adapt_play_card(proposed, state)
+        card = state.my_hand_cards[proposed.source.index - 1]
+        return _with_choose_one(proposed, state, adapted, card)
     if proposed.action == ActionKind.TRADE_CARD:
         return _adapt_trade_card(proposed, state)
     if proposed.action == ActionKind.USE_HERO_POWER:
-        return _adapt_hero_power(proposed, state)
+        adapted = _adapt_hero_power(proposed, state)
+        return _with_choose_one(
+            proposed, state, adapted, getattr(state, "my_hero_power", None))
     if proposed.action == ActionKind.ATTACK:
         return _adapt_attack(proposed, state)
     if proposed.action == ActionKind.USE_LOCATION:
@@ -117,6 +122,35 @@ def adapt_action(proposed, state):
     if proposed.action == ActionKind.END_TURN:
         return AdaptedAction(EndTurnAction(), None, None, "turn_changed")
     raise RecommendationStateError("unsupported_action")
+
+
+def _with_choose_one(proposed, state, adapted, source):
+    name = getattr(proposed, "choice_name", None)
+    if name is None or source is None:
+        return adapted
+    if source.card_id not in choose_one_card_ids():
+        return adapted
+    if (isinstance(adapted.manual_action, PlayCardAction)
+            and adapted.manual_action.cardtype not in {"SPELL", "MINION"}):
+        raise RecommendationStateError("choose_one_cardtype_unsupported")
+    option = getattr(state, "power_options", {}).get(
+        getattr(source, "entity_id", None))
+    if (option is None or option.get("card_id") != source.card_id
+            or option.get("player") != getattr(state, "my_player_id", None)):
+        raise RecommendationStateError("choose_one_options_unavailable")
+    choices = option["choices"]
+    count = len(choices)
+    if count not in (1, 2, 3, 4) or set(choices) != set(range(count)):
+        raise RecommendationStateError("choose_one_options_incomplete")
+    matches = [index for index, choice in choices.items()
+               if choice.get("name") == name]
+    if len(matches) != 1:
+        raise RecommendationStateError("choose_one_name_not_unique")
+    index = matches[0]
+    if choices[index].get("error") not in {"NONE", "REQ_TARGET_TO_PLAY"}:
+        raise RecommendationStateError("choose_one_option_unavailable")
+    return replace(adapted, manual_action=replace(
+        adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
 
 
 def _adapt_play_card(proposed, state):

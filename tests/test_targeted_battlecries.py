@@ -85,7 +85,7 @@ class TargetedBattlecryTests(unittest.TestCase):
                 self.assertEqual(entity_id, adapted.target_entity_id)
                 self.assertEqual([("hand", 0, 1), ("place", 0, 2),
                                   click, ("cancel",)], events)
-                self.assertEqual([.3], sleeps)
+                self.assertEqual([.4], sleeps)
 
     def test_friendly_target_before_placement_keeps_index(self):
         state = self.state()

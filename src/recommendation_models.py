@@ -73,6 +73,7 @@ class ProposedAction:
     card_type: Optional[str] = None
     ocr_confidence: float = 0.0
     semantic_confidence: float = 0.0
+    choice_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
