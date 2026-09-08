@@ -38,22 +38,25 @@ class FullBoardMagneticTests(unittest.TestCase):
             action_context=nullcontext,
         )
 
-    def test_full_board_drags_card_to_recommended_original_position(self):
-        clicks = RecordingClickModule()
+    def test_full_board_keeps_normal_placement_for_all_recommended_gaps(self):
+        for gap in range(8):
+            with self.subTest(gap=gap):
+                clicks = RecordingClickModule()
 
-        self._executor(clicks).play_minion(
-            hand_index=2,
-            hand_count=5,
-            gap_index=3,
-            minion_count=7,
-            oppo_minion_count=0,
-            target=None,
-        )
+                self._executor(clicks).play_minion(
+                    hand_index=2,
+                    hand_count=5,
+                    gap_index=gap,
+                    minion_count=7,
+                    oppo_minion_count=0,
+                    target=None,
+                )
 
-        self.assertEqual([
-            ("drag_card_to_board_entity", 2, 5, 3, 7),
-            ("cancel_click",),
-        ], clicks.events)
+                self.assertEqual([
+                    ("choose_card", 2, 5),
+                    ("put_minion", gap, 7),
+                    ("cancel_click",),
+                ], clicks.events)
 
     def test_non_full_board_keeps_original_click_placement(self):
         clicks = RecordingClickModule()
