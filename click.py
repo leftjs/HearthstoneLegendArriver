@@ -327,13 +327,17 @@ def click_launch_starship():
 
 
 def drag_card_to_deck():
-    """Drag the selected hand card to the friendly deck."""
+    """Drag the selected hand card to the friendly deck.
+
+    到达牌库后必须按够 DECK_DROP_HOLD_INTERVAL 再松手：交易/锻造/预备都靠
+    “牌库悬停高亮就绪→松开”触发，松太快会概率性失败(卡牌又弹回手牌)。
+    """
     mouse = Controller()
     mouse.press(Button.left)
     try:
         rand_sleep(0.1)
         mouse.position = (1600, 850)
-        rand_sleep(0.1)
+        rand_sleep(DECK_DROP_HOLD_INTERVAL)
     finally:
         mouse.release(Button.left)
 
