@@ -335,7 +335,8 @@ def drag_card_to_deck():
     mouse.press(Button.left)
     try:
         rand_sleep(0.1)
-        mouse.position = (1600, 850)
+        # 我方牌库中心点(1920x1080 实测，用户量得 1635,640)。
+        mouse.position = (1635, 640)
         rand_sleep(DECK_DROP_HOLD_INTERVAL)
     finally:
         mouse.release(Button.left)
