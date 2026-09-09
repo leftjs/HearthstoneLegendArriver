@@ -122,6 +122,18 @@ TINY_OPERATE_INTERVAL = float(_env("HS_TINY_OPERATE_INTERVAL", "0.08"))
 # 概率性失败——卡牌又弹回手牌，动作作废。经 HS_DECK_DROP_HOLD_INTERVAL 覆盖。
 DECK_DROP_HOLD_INTERVAL = float(_env("HS_DECK_DROP_HOLD_INTERVAL", "0.8"))
 
+# ---------------------------------------------------------------- 拖随从落牌悬停时长
+# 带指向战吼的随从(沉默/打伤害等)落牌时，按人手方式“按住手牌拖到落点空隙再
+# 松手”，松手前把卡牌按在空隙上的停留时间基准(秒)。落点需要高亮就绪后才接受
+# 这次拖放，太快松手会概率性弹回手牌。经 HS_MINION_DROP_HOLD_INTERVAL 覆盖。
+MINION_DROP_HOLD_INTERVAL = float(_env("HS_MINION_DROP_HOLD_INTERVAL", "0.4"))
+
+# ---------------------------------------------------------------- 点击轨迹调试
+# 为 1 时，click.py 把每次物理点击(左/右键+坐标)、拖拽移动、回位中立点
+# (480,540) 打印成 [CLICK] 日志，随 stdout 一并落盘 ui_log_last.txt /
+# log/info_log.txt，用于对录像核对真实点击顺序。经 HS_CLICK_TRACE 覆盖。
+CLICK_TRACE = _env("HS_CLICK_TRACE", "1") == "1"
+
 # ---------------------------------------------------------------- 自动投降默认值
 # 自动投降功能的默认配置（单一来源：Web 层与 FSM_action 层共用，避免各自硬编码）。
 # 真实值保存在 ui_config.json 的 auto_concede 段；这里只提供“没配置时”的兜底。

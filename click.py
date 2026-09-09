@@ -65,11 +65,26 @@ def rand_sleep(interval):
     time.sleep(base_time + rand_time)
 
 
+def _click_trace(msg):
+    """点击轨迹调试日志：随 stdout 落盘，便于对录像核对真实点击顺序。
+
+    受 config.CLICK_TRACE 控制（默认开，HS_CLICK_TRACE=0 关闭）。坐标在
+    info_print 的秒级前缀之外按行序排列，多点击同秒时以行序为准。
+    """
+    if not CLICK_TRACE:
+        return
+    try:
+        info_print("[CLICK] " + msg)
+    except Exception:
+        pass
+
+
 def center_mouse(mouse=None):
     """Move the pointer to the neutral screen center without clicking."""
     if mouse is None:
         mouse = Controller()
     mouse.position = (480, 540)
+    _click_trace(f"回位中立点 (480,540)")
 
 
 def park_mouse(mouse=None):
@@ -93,6 +108,7 @@ def run_hearthstone_action(action):
 
 
 def _send_physical_click(mouse, x, y, button):
+    _click_trace(f"{button.name}点 ({x},{y})")
     mouse.position = (x, y)
     rand_sleep(0.1)
     mouse.press(button)
@@ -254,13 +270,16 @@ def drag_card_to_board_entity(card_index, card_num, entity_index, entity_num):
     mouse = Controller()
     mouse.position = (HAND_CARD_X[card_num][card_index], 1000)
     rand_sleep(0.1)
+    _click_trace(f"拖拽按下 手牌 ({HAND_CARD_X[card_num][card_index]},1000)")
     mouse.press(Button.left)
     try:
         board_x = 960 - (entity_num - 1) * 70 + entity_index * 140
         mouse.position = (board_x - 25, 600)
+        _click_trace(f"拖拽移至 落点 ({board_x - 25},600)")
         rand_sleep(0.1)
     finally:
         mouse.release(Button.left)
+        _click_trace("拖拽松开")
 
 
 # 第[i]个随从左边那个空隙记为第[i]个gap
@@ -273,6 +292,40 @@ def put_minion(gap_index, minion_num):
     x = 960 - (minion_num - 1) * 70 + 140 * gap_index - 70
     y = 600
     left_click(x, y)
+
+
+def drag_card_to_gap(card_index, card_num, gap_index, minion_num):
+    """按住手牌，把随从拖到第 gap_index 个空隙落点再松手。
+
+    用于带指向战吼的随从（沉默/打伤害等）：落牌按人手习惯是“按住手牌→拖到
+    盒子推荐的落点空隙→悬停→松开”，不是选牌后点两下。落点坐标与 put_minion
+    一致，只是把“点一下落点”换成真正的拖放，避免卡片被拆成两步/弹回手牌。
+    """
+    assert 0 <= card_index < card_num <= 10
+    if minion_num >= 7:
+        warn_print(f"Try to put a minion but there has already been {minion_num} minions")
+
+    x = 960 - (minion_num - 1) * 70 + 140 * gap_index - 70
+    y = 600
+
+    mouse = Controller()
+    hand_x = HAND_CARD_X[card_num][card_index]
+    mouse.position = (hand_x, 1000)
+    rand_sleep(0.1)
+    _click_trace(f"拖随从按下 手牌 ({hand_x},1000)")
+    mouse.press(Button.left)
+    try:
+        # 先竖直往上抬离手牌区，再斜向滑到落点，模拟人手拖拽路径，
+        # 避免 HS 把一次性瞬移当成丢帧。
+        mouse.position = (hand_x, 850)
+        rand_sleep(0.08)
+        _click_trace(f"拖随从抬起 至 ({hand_x},850)")
+        mouse.position = (x, y)
+        _click_trace(f"拖随从移至 空隙落点 ({x},{y})")
+        rand_sleep(MINION_DROP_HOLD_INTERVAL)
+    finally:
+        mouse.release(Button.left)
+        _click_trace("拖随从松开")
 
 
 def match_opponent():
@@ -332,14 +385,17 @@ def drag_card_to_deck():
     “牌库悬停高亮就绪→松开”触发，松太快会概率性失败(卡牌又弹回手牌)。
     """
     mouse = Controller()
+    _click_trace("拖牌入库 按下")
     mouse.press(Button.left)
     try:
         rand_sleep(0.1)
         # 我方牌库中心点(1920x1080 实测，用户量得 1635,640)。
         mouse.position = (1635, 640)
+        _click_trace("拖牌入库 移至牌库 (1635,640)")
         rand_sleep(DECK_DROP_HOLD_INTERVAL)
     finally:
         mouse.release(Button.left)
+        _click_trace("拖牌入库 松开")
 
 
 def commit_error_report():

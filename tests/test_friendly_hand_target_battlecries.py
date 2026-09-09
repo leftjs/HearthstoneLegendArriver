@@ -25,6 +25,16 @@ class RecordingClickModule:
     def put_minion(self, gap_index, board_count):
         self.events.append(("put_minion", gap_index, board_count))
 
+    def drag_card_to_gap(self, hand_index, hand_count, gap_index,
+                         board_count):
+        self.events.append((
+            "drag_card_to_gap",
+            hand_index,
+            hand_count,
+            gap_index,
+            board_count,
+        ))
+
     def cancel_click(self):
         self.events.append(("cancel_click",))
 
@@ -99,8 +109,7 @@ class FriendlyHandTargetBattlecryTests(unittest.TestCase):
 
                 self.assertTrue(result.executed, result.message)
                 self.assertEqual([
-                    ("choose_card", 1, 4),
-                    ("put_minion", 0, 0),
+                    ("drag_card_to_gap", 1, 4, 0, 0),
                     ("choose_card", 2, 3),
                     ("cancel_click",),
                 ], clicks.events)
@@ -243,8 +252,7 @@ class FriendlyHandTargetBattlecryTests(unittest.TestCase):
 
         self.assertTrue(result.executed, result.message)
         self.assertEqual([
-            ("choose_card", 2, 3),
-            ("put_minion", 0, 0),
+            ("drag_card_to_gap", 2, 3, 0, 0),
             ("choose_card", 0, 2),
             ("cancel_click",),
         ], clicks.events)

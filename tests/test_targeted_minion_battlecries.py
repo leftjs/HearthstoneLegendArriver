@@ -30,6 +30,16 @@ class RecordingClickModule:
     def put_minion(self, gap_index, board_count):
         self.events.append(("put_minion", gap_index, board_count))
 
+    def drag_card_to_gap(self, hand_index, hand_count, gap_index,
+                         board_count):
+        self.events.append((
+            "drag_card_to_gap",
+            hand_index,
+            hand_count,
+            gap_index,
+            board_count,
+        ))
+
     def choose_opponent_minion(self, oppo_index, oppo_num):
         self.events.append(("choose_opponent_minion", oppo_index, oppo_num))
 
@@ -222,9 +232,64 @@ class TargetedMinionControllerTests(unittest.TestCase):
 
         self.assertTrue(result.executed, result.message)
         self.assertEqual([
-            ("choose_card", 1, 2),
-            ("put_minion", 0, 0),
+            ("drag_card_to_gap", 1, 2, 0, 0),
             ("choose_opponent_minion", 4, 5),
+            ("cancel_click",),
+        ], clicks.events)
+        self.assertEqual([0.3], sleeps)
+
+    def test_enemy_target_with_explicit_destination_drags_to_gap(self):
+        # 王室图书管理员 + 「放置于我方6号位」：满编场上带落点。盒子推荐
+        # 「打出2号位随从/目标是对方3号位/放置于我方6号位」。落牌必须是拖到
+        # 空隙而不是点两下，否则指向战吼随从会弹回手牌。
+        state = SimpleNamespace(
+            game_num_turns_in_play=9,
+            is_my_turn=True,
+            my_hand_cards=[
+                SimpleNamespace(
+                    card_id="MINION_1", cardtype="MINION",
+                    entity_id="h1", name="假随从"),
+                SimpleNamespace(
+                    card_id="CATA_999", cardtype="MINION",
+                    entity_id="h2", name="王室图书管理员"),
+            ],
+            my_minions=[
+                SimpleNamespace(
+                    card_id="M", cardtype="MINION",
+                    entity_id=fid, zone_pos=pos)
+                for pos, fid in enumerate(
+                    ["f1", "f2", "f3", "f4", "f5"], start=1)
+            ],
+            my_locations=[],
+            my_board_slot_num=5,
+            oppo_minions=[
+                SimpleNamespace(
+                    card_id="M", cardtype="MINION",
+                    entity_id=eid, zone_pos=pos)
+                for pos, eid in enumerate(
+                    ["e1", "e2", "e3", "e4", "e5", "e6"], start=1)
+            ],
+            oppo_board_slot_num=6,
+        )
+        proposed = RecommendationParser().parse(
+            _ocr("打出2号位随从\n目标是对方3号位随从\n放置于我方6号位"),
+            turn_number=9, log_revision=7)
+        adapted = adapt_action(proposed, state)
+        clicks = RecordingClickModule()
+        sleeps = []
+
+        result = _controller(clicks, sleeps).execute(
+            adapted.manual_action, state)
+
+        self.assertTrue(result.executed, result.message)
+        self.assertEqual(1, adapted.manual_action.hand_index)
+        self.assertEqual(5, adapted.manual_action.gap_index)
+        self.assertEqual(
+            Target("enemy", "minion", 2, "e3"),
+            adapted.manual_action.target)
+        self.assertEqual([
+            ("drag_card_to_gap", 1, 2, 5, 5),
+            ("choose_opponent_minion", 2, 6),
             ("cancel_click",),
         ], clicks.events)
         self.assertEqual([0.3], sleeps)

@@ -352,6 +352,11 @@ class ClickExecutor:
         if minion_count >= 7:
             self.click.drag_card_to_board_entity(
                 hand_index, hand_count, gap_index, minion_count)
+        elif target is not None:
+            # 带指向战吼的随从：按人手方式“按住手牌→拖到落点空隙→松开”，
+            # 落定后 HS 弹出选目标，再单独点目标；分两次点击会弹回手牌。
+            self.click.drag_card_to_gap(
+                hand_index, hand_count, gap_index, minion_count)
         else:
             self.click.choose_card(hand_index, hand_count)
             self.click.put_minion(gap_index, minion_count)
