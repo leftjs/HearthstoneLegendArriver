@@ -52,7 +52,7 @@ SHOW_ENTITY_PATTERN = re.compile(r" *SHOW_ENTITY - Updating Entity=(.*) CardID=(
 CHANGE_ENTITY_PATTERN = re.compile(r" *CHANGE_ENTITY - Updating Entity=(.*) CardID=(.*) *")
 
 # "BLOCK_START BlockType=DEATHS Entity=GameEntity EffectCardId=System.Collections.Generic.List`1[System.String] EffectIndex=0 Target=0 SubOption=-1 "
-BLOCK_START_PATTERN = re.compile(r" *BLOCK_START BlockType=([A-Z]+) Entity=(.*) EffectCardId=.*")
+BLOCK_START_PATTERN = re.compile(r" *BLOCK_START BlockType=([A-Z_]+) Entity=(.*) EffectCardId=.*")
 
 # "BLOCK_START BlockType=TRIGGER Entity=[entityName=黑暗主教本尼迪塔斯 id=5 zone=DECK zonePos=0 cardId=SW_448 player=1] EffectCardId=System.Collections.Generic.List`1[System.String] EffectIndex=0 Target=0 SubOption=-1 TriggerKeyword=START_OF_GAME_KEYWORD"
 # 用于识别"开局生效的全局卡"事件：BlockType=TRIGGER + TriggerKeyword=START_OF_GAME_KEYWORD。
