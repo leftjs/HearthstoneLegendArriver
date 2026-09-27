@@ -33,12 +33,18 @@ class StableRecommendationReader:
         return type(evidence)(
             frame.frame_id, time.time(), evidence.lines,
             evidence.normalized_text, evidence.confidence,
-            evidence.backend, evidence.preprocessing)
+            evidence.backend, evidence.preprocessing,
+            getattr(evidence, "raw_lines", ()), getattr(evidence, "raw_text", ""))
 
     def read(self, frame_supplier, roi_supplier):
         previous_text = None
         stable_count = 0
         latest = None
+        # 诊断累计：读不到面板时日志里只有错误码，无法判断是「一个字都没识别到」
+        # 还是「识别到了但帧间不稳定」。这里记下最好的一次与文本种类数。
+        best_confidence = 0.0
+        best_lines = 0
+        distinct_texts = set()
         for attempt in range(self.config.max_attempts):
             frame = frame_supplier()
             roi = roi_supplier(frame)
@@ -55,6 +61,11 @@ class StableRecommendationReader:
                     self.sleep(self.config.retry_interval_seconds)
                 continue
             text = evidence.normalized_text
+            if evidence.confidence > best_confidence:
+                best_confidence = evidence.confidence
+                best_lines = len(evidence.lines)
+            if text:
+                distinct_texts.add(text)
             if evidence.confidence >= self.config.min_ocr_confidence and text:
                 stable_count = stable_count + 1 if text == previous_text else 1
                 previous_text = text
@@ -66,7 +77,10 @@ class StableRecommendationReader:
                 stable_count = 0
             if attempt + 1 < self.config.max_attempts:
                 self.sleep(self.config.retry_interval_seconds)
-        raise OcrRejectedError("recommendation_not_stable")
+        raise OcrRejectedError(
+            f"recommendation_not_stable:attempts={self.config.max_attempts}"
+            f":best_conf={best_confidence:.2f}:best_lines={best_lines}"
+            f":distinct_texts={len(distinct_texts)}")
 
     def read_frame(self, frame, roi_supplier):
         evidence = self._cached(frame)
@@ -90,6 +104,10 @@ class StableRecommendationReader:
         return None
 
     def _action_evidence(self, evidence):
+        # 过滤前先固化完整面板文本：过滤会丢掉标题行和牌名行，卡手排查时需要原文。
+        raw_lines = tuple(getattr(evidence, "raw_lines", ()) or evidence.lines)
+        raw_text = (getattr(evidence, "raw_text", "") or "\n".join(
+            line.text for line in evidence.lines if line.text.strip()))
         if self.required_headers:
             header_lines = [
                 line for line in evidence.lines
@@ -99,7 +117,8 @@ class StableRecommendationReader:
                     < self.config.min_ocr_confidence):
                 return type(evidence)(
                     evidence.frame_id, evidence.created_at, (), "", 0.0,
-                    evidence.backend, evidence.preprocessing)
+                    evidence.backend, evidence.preprocessing,
+                    raw_lines, raw_text)
         normalized_text = self.text_normalizer(evidence.normalized_text)
         expected_lines = normalized_text.splitlines()
         relevant_lines = []
@@ -124,7 +143,7 @@ class StableRecommendationReader:
         return type(evidence)(
             evidence.frame_id, evidence.created_at, relevant_lines,
             normalized_text, confidence, evidence.backend,
-            evidence.preprocessing)
+            evidence.preprocessing, raw_lines, raw_text)
 
     @staticmethod
     def _normalize(text):

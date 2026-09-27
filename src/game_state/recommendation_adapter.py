@@ -5,10 +5,14 @@ from dataclasses import dataclass, replace
 from manual_controller import (
     AttackAction, DiscoverChoiceAction, EndTurnAction, HeroPowerAction,
     FRIENDLY_HAND_TARGET_CARD_IDS, LaunchStarshipAction, PlayCardAction,
-    Target, TimelineAction, TradeCardAction, UseLocationAction,
+    Target, TimelineAction, TitanAbilityAction, TradeCardAction,
+    UseLocationAction,
 )
 from src.recommendation_models import ActionKind
 from src.game_state.choose_one import choose_one_card_ids
+from src.game_state.titan import (
+    TITAN_ABILITY_COUNT, static_ability_choice, titan_card_ids,
+)
 
 
 class RecommendationStateError(ValueError):
@@ -30,6 +34,23 @@ class AdaptedAction:
     postcondition: str
 
 
+def _entity_label(entry):
+    entity = entry.entity
+    return (f"{entry.kind}#{getattr(entity, 'card_id', None) or '?'}"
+            f"(eid={getattr(entity, 'entity_id', None) or '?'},"
+            f"zp={getattr(entity, 'zone_pos', None) or '?'})")
+
+
+def _board_snapshot(entries):
+    """场面速写：出错时把冲突实体一起带进诊断，便于事后定位。
+
+    诊断串会原样进入浮窗日志（``retry:<消息>``），所以必须保持单行且简短。
+    """
+    if not entries:
+        return "empty"
+    return "[" + ", ".join(_entity_label(entry) for entry in entries) + "]"
+
+
 def ordered_board(state, side):
     minions = state.my_minions if side == "friendly" else state.oppo_minions
     locations = (getattr(state, "my_locations", []) if side == "friendly"
@@ -40,16 +61,23 @@ def ordered_board(state, side):
                    for i, entity in enumerate(locations))
     positions = [getattr(entry.entity, "zone_pos", 0) for entry in entries]
     if any(position <= 0 for position in positions):
-        raise RecommendationStateError("board_position_unknown")
+        raise RecommendationStateError(
+            f"board_position_unknown:{side}:{_board_snapshot(entries)}")
     if len(set(positions)) != len(positions):
-        raise RecommendationStateError("duplicate_board_position")
+        duplicates = sorted({position for position in positions
+                             if positions.count(position) > 1})
+        raise RecommendationStateError(
+            f"duplicate_board_position:{side}:dup={duplicates}:"
+            f"{_board_snapshot(entries)}")
     return tuple(sorted(entries, key=lambda entry: entry.entity.zone_pos))
 
 
 def board_slot(state, side, one_based_index):
     board = ordered_board(state, side)
     if not 1 <= one_based_index <= len(board):
-        raise RecommendationStateError("board_slot_out_of_range")
+        raise RecommendationStateError(
+            f"board_slot_out_of_range:{side}:asked={one_based_index}:"
+            f"len={len(board)}:{_board_snapshot(board)}")
     return board[one_based_index - 1]
 
 
@@ -109,16 +137,23 @@ def adapt_action(proposed, state):
     if proposed.action == ActionKind.CHOOSE_DISCOVER:
         choice_count = getattr(state, "discover_choice_count", None)
         if choice_count not in (1, 2, 3, 4):
-            raise RecommendationStateError("discover_choice_count_unavailable")
+            raise RecommendationStateError(
+                f"discover_choice_count_unavailable:count={choice_count}")
         if (proposed.source is None
                 or proposed.source.kind != "discover_slot"
                 or proposed.source.owner != "friendly"
                 or not 1 <= proposed.source.index <= choice_count):
-            raise RecommendationStateError("discover_slot_out_of_range")
+            raise RecommendationStateError(
+                f"discover_slot_out_of_range:count={choice_count}:"
+                f"kind={getattr(proposed.source, 'kind', None)}:"
+                f"owner={getattr(proposed.source, 'owner', None)}:"
+                f"index={getattr(proposed.source, 'index', None)}")
         return AdaptedAction(
             DiscoverChoiceAction(
                 proposed.source.index - 1, choice_count),
             None, None, "choice_resolved")
+    if proposed.action == ActionKind.TITAN_ABILITY:
+        return _adapt_titan_ability(proposed, state)
     if proposed.action == ActionKind.END_TURN:
         return AdaptedAction(EndTurnAction(), None, None, "turn_changed")
     if proposed.action == ActionKind.TIMELINE_UNDO:
@@ -133,38 +168,299 @@ def adapt_action(proposed, state):
 
 
 def _with_choose_one(proposed, state, adapted, source):
+    """把盒子给的抉择名解析成「点面板第几个」。
+
+    盒子文本里出现「选择卡牌 + 选项名」，本身就证明这是一次抉择——判据不需要
+    卡表。真正缺的只是**点面板第几个**，它来自引擎的 ``subOption`` 下标：
+
+      1. 当前 Power.log 里这张牌的子项（最权威，还带可用性 error）；
+      2. 否则用本局学到过的顺序（子项只在牌「当前可打出」时下发，盒子给推荐时
+         往往已经不再下发；实测同一张牌的顺序固定，学到一次就够）。
+
+    两处都拿不到才报错重试，绝不盲点。
+    """
     name = getattr(proposed, "choice_name", None)
     if name is None or source is None:
         return adapted
-    if source.card_id not in choose_one_card_ids():
-        return adapted
+    if source.card_id in titan_card_ids():
+        # 泰坦从手牌打出时，盒子给的是「打出N号位随从 + 选择卡牌 + 技能名」，
+        # 和抉择同形：落地后服务器弹出的就是三张技能牌，选完才轮到目标。
+        index, count = _titan_ability_choice(
+            state, source.card_id, getattr(source, "entity_id", None), name)
+        return replace(adapted, manual_action=replace(
+            adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
     if (isinstance(adapted.manual_action, PlayCardAction)
             and adapted.manual_action.cardtype not in {"SPELL", "MINION"}):
-        raise RecommendationStateError("choose_one_cardtype_unsupported")
-    option = getattr(state, "power_options", {}).get(
-        getattr(source, "entity_id", None))
-    if (option is None or option.get("card_id") != source.card_id
-            or option.get("player") != getattr(state, "my_player_id", None)):
-        raise RecommendationStateError("choose_one_options_unavailable")
-    choices = option["choices"]
+        raise RecommendationStateError(
+            f"choose_one_cardtype_unsupported:card={source.card_id}"
+            f":type={adapted.manual_action.cardtype}:name={name}")
+    entity_id = getattr(source, "entity_id", None)
+    detail = f"card={source.card_id}:eid={entity_id}:name={name}"
+    choices = _power_option_choices(state, source.card_id, entity_id)
+    if choices:
+        index, count = _choose_one_from_choices(choices, name)
+        return replace(adapted, manual_action=replace(
+            adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
+    learned = _learned_choice(state, source.card_id, name)
+    if learned is not None:
+        index, count = learned
+        return replace(adapted, manual_action=replace(
+            adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
+    if source.card_id in choose_one_card_ids():
+        # 卡表认得它是抉择牌，但这次日志里没有可用的子项：多半只读了一半，
+        # 报错重试即可自愈。
+        raise RecommendationStateError(
+            f"choose_one_options_unavailable:{detail}"
+            f":learned={_learned_labels(state, source.card_id)}")
+    # 盒子的选项名没有对应的状态依据，卡表也不认识这张牌：这是识别缺口，
+    # 宁可报错重试也不盲点——盲点只会点开选择框然后卡住（连点）。
+    raise RecommendationStateError(f"choose_one_card_unknown:{detail}")
+
+
+def _learned_labels(state, card_id):
+    """学过的顺序，按 ``下标:名字`` 拼成诊断串（表里存的是 {下标: 名字}）。"""
+    layouts = getattr(state, "power_option_layouts", None) or {}
+    table = layouts.get(card_id) or {}
+    return _choices_brief(table)
+
+
+def _learned_choice(state, card_id, name):
+    """用本局学过的顺序解析 ``(下标, 选项数量)``；没有则 None。
+
+    ``power_option_layouts`` 里存的是「子项名 → 面板下标」。历史上泰坦的
+    ``titan_ability_choices`` 是反过来的 ``{下标: 名字}``，为兼容两种形状，
+    这里两种都认。
+    """
+    layouts = getattr(state, "power_option_layouts", None) or {}
+    table = layouts.get(card_id) or {}
+    if not table:
+        return None
+    # {名字: 下标}
+    if name in table and isinstance(table[name], int):
+        count = len(table)
+        if count in (1, 2, 3, 4) and all(
+                isinstance(v, int) for v in table.values()):
+            return table[name], count
+    # {下标: 名字}
+    count = len(table)
+    if count not in (1, 2, 3, 4):
+        return None
+    matches = [str(index) for index, option_name in table.items()
+               if option_name == name]
+    if len(matches) != 1:
+        return None
+    try:
+        return int(matches[0]), count
+    except ValueError:
+        return None
+
+
+def _choose_one_from_choices(choices, name):
+    """在 option/subOption 子项表里按名字唯一定位 ``(下标, 选项数量)``。
+
+    失败一律带上盒子给的名字和整张选项表：``choose_one_name_not_unique``
+    在 2026-09-21 07:51 卡了 112 次，当时日志里只有错误码，无法判断是哪个
+    选项重名。
+    """
     count = len(choices)
     if count not in (1, 2, 3, 4) or set(choices) != set(range(count)):
-        raise RecommendationStateError("choose_one_options_incomplete")
+        raise RecommendationStateError(
+            f"choose_one_options_incomplete:name={name}"
+            f":choices={_choices_brief(choices)}")
     matches = [index for index, choice in choices.items()
                if choice.get("name") == name]
     if len(matches) != 1:
-        raise RecommendationStateError("choose_one_name_not_unique")
+        raise RecommendationStateError(
+            f"choose_one_name_not_unique:name={name}"
+            f":indices={matches}:choices={_choices_brief(choices)}")
     index = matches[0]
     if choices[index].get("error") not in {"NONE", "REQ_TARGET_TO_PLAY"}:
-        raise RecommendationStateError("choose_one_option_unavailable")
-    return replace(adapted, manual_action=replace(
-        adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
+        raise RecommendationStateError(
+            f"choose_one_option_unavailable:name={name}:index={index}"
+            f":error={choices[index].get('error')}"
+            f":choices={_choices_brief(choices)}")
+    return index, count
+
+
+def _adapt_titan_ability(proposed, state):
+    """「操作N号位泰坦」+「选择卡牌 技能名」+（可选）目标 的执行计划。
+
+    点击顺序与盒子文字顺序无关：先点自己场上的泰坦弹出技能面板，再点技能，
+    最后（技能需要目标时）点目标。技能面板与发现/抉择共用居中卡牌布局，
+    所以技能下标沿用 DiscoverChoiceAction 的点击方式。
+    """
+    entry = board_slot(state, "friendly", proposed.source.index)
+    if entry.kind != "minion":
+        raise RecommendationStateError("source_not_minion")
+    titan = entry.entity
+    name = getattr(proposed, "choice_name", None)
+    if not name:
+        raise RecommendationStateError("titan_ability_name_required")
+    index, count = _titan_ability_choice(
+        state, titan.card_id, getattr(titan, "entity_id", None), name)
+    target = None
+    target_id = None
+    if proposed.target is not None:
+        target, target_id = _titan_target(state, proposed.target)
+    manual = TitanAbilityAction(
+        entry.collection_index, titan.card_id, index, count,
+        ability_name=name, target=target,
+        titan_entity_id=getattr(titan, "entity_id", None))
+    return AdaptedAction(manual, getattr(titan, "entity_id", None),
+                         target_id, "titan_ability_used")
+
+
+def _choices_brief(options):
+    """技能/子项表的单行速写：``下标:名字(error)``。"""
+    if not options:
+        return "-"
+    parts = []
+    for index in sorted(options):
+        option = options[index]
+        if isinstance(option, dict):
+            label = f"{index}:{option.get('name') or '?'}"
+            error = option.get("error")
+            if error and error != "NONE":
+                label += f"({error})"
+        else:
+            label = f"{index}:{option}"
+        parts.append(label)
+    return "[" + ", ".join(parts) + "]"
+
+
+def _titan_ability_choice(state, card_id, entity_id, name):
+    """把盒子给的泰坦技能名解析成 ``(面板下标, 技能数量)``。
+
+    依次尝试：本次 Power.log 的 option/subOption → 本局学到过的技能顺序 →
+    静态兜底表。每一步都要求技能面板是完整的三张（见 TITAN_ABILITY_COUNT）：
+    不完整的来源直接跳过（多半是日志只读到一半），全都对不上就报错重试，
+    绝不猜着点。
+
+    所有失败都把「盒子给的名字 + 三个来源里实际有什么」带进诊断：泰坦卡手时
+    日志里只有错误码，无法判断是名字对不上、日志没读全，还是场面已变。
+    """
+    current = _power_option_choices(state, card_id, entity_id)
+    current_index = _titan_index_of(current, name)
+    if current_index is not None and _complete_titan_options(current):
+        if current[current_index].get("error") not in {"NONE",
+                                                       "REQ_TARGET_TO_PLAY"}:
+            raise RecommendationStateError(
+                f"titan_ability_unavailable:card={card_id}:eid={entity_id}:"
+                f"name={name}:current={_choices_brief(current)}")
+        return current_index, len(current)
+    learned = (getattr(state, "titan_ability_choices", None)
+               or {}).get(card_id) or {}
+    learned_index = _titan_index_of(learned, name)
+    if learned_index is not None and _complete_titan_options(learned):
+        return learned_index, len(learned)
+    static = static_ability_choice(card_id, name)
+    if static is not None:
+        return static
+    detail = (f"card={card_id}:eid={entity_id}:name={name}"
+              f":current={_choices_brief(current)}"
+              f":learned={_choices_brief(learned)}")
+    if current_index is not None or learned_index is not None:
+        raise RecommendationStateError(
+            f"titan_ability_options_incomplete:{detail}")
+    raise RecommendationStateError(
+        f"titan_ability_options_unavailable:{detail}")
+
+
+def _titan_index_of(options, name):
+    """技能名在选项表里的唯一下标；没有则 None，出现多个直接报错。
+
+    options 既可能是 Power.log 的 ``{下标: {"name": ...}}``，也可能是本局学到的
+    ``{下标: 技能名}``。
+    """
+    matches = [index for index, option in (options or {}).items()
+               if (option.get("name") if isinstance(option, dict) else option)
+               == name]
+    if len(matches) > 1:
+        # 带上重名与全部候选：同名技能出现两次时，日志里必须能看出重复的是谁。
+        raise RecommendationStateError(
+            f"titan_ability_name_not_unique:name={name}"
+            f":indices={matches}:options={_choices_brief(options)}")
+    return matches[0] if matches else None
+
+
+def _complete_titan_options(options):
+    """技能面板必须是完整的三张：不完整一律当作日志没读全。"""
+    return bool(options) and len(options) == TITAN_ABILITY_COUNT and (
+        set(options) == set(range(TITAN_ABILITY_COUNT)))
+
+
+def _is_my_entity_id(state, entity_id):
+    """实体是否在己方手牌/场上（控制权判定，不看 ``player=`` 原主字段）。"""
+    if entity_id is None:
+        return False
+    collections = (
+        getattr(state, "my_hand_cards", ()),
+        getattr(state, "my_minions", ()),
+        getattr(state, "my_locations", ()),
+    )
+    return any(
+        str(getattr(entity, "entity_id", None)) == str(entity_id)
+        for collection in collections for entity in (collection or ()))
+
+
+def _power_option_choices(state, card_id, entity_id):
+    """当前 Power.log 里这张牌的可选子项（没有/不是自己控制的牌时返回 None）。
+
+    控制权用「实体在不在己方手牌/场上」判定，**不能**用选项里的 ``player=``：
+    那是牌的**原主**（owner），抢过来的随从（如「控制权变更」偷来的泰坦）原主
+    仍是对手，但 CONTROLLER 已经是自己——按原主判定会把这类牌全部拒掉，
+    表现就是 titan_ability_options_unavailable 卡死。
+    """
+    option = (getattr(state, "power_options", None) or {}).get(entity_id)
+    if option is None or option.get("card_id") != card_id:
+        return None
+    if not _is_my_entity_id(state, entity_id):
+        return None
+    return option.get("choices") or None
+
+
+def _titan_target(state, ref):
+    """泰坦技能的目标（随从或英雄），返回 ``(Target, entity_id)``。"""
+    side = ref.owner
+    if side not in {"friendly", "enemy"}:
+        raise RecommendationStateError("titan_target_unsupported")
+    if ref.kind == "hero":
+        hero = (getattr(state, "my_hero", None) if side == "friendly"
+                else getattr(state, "oppo_hero", None))
+        if hero is None:
+            raise RecommendationStateError("titan_target_missing")
+        entity_id = getattr(hero, "entity_id", None)
+        return Target(side, "hero", None, entity_id), entity_id
+    if ref.kind == "board_slot":
+        entry = board_slot(state, side, ref.index)
+        if entry.kind != "minion":
+            raise RecommendationStateError("target_not_minion")
+        entity_id = getattr(entry.entity, "entity_id", None)
+        return Target(side, "minion", entry.collection_index, entity_id), entity_id
+    raise RecommendationStateError("titan_target_unsupported")
+
+
+def _hand_snapshot(cards):
+    """手牌速写：诊断里带上牌名与实体号，定位槽位错乱用。"""
+    if not cards:
+        return "empty"
+    return "[" + ", ".join(
+        f"{i + 1}:{getattr(card, 'card_id', None) or '?'}"
+        f"(eid={getattr(card, 'entity_id', None) or '?'})"
+        for i, card in enumerate(cards)) + "]"
+
+
+def _hand_slot_error(where, asked, cards):
+    return RecommendationStateError(
+        f"hand_slot_out_of_range:{where}:asked={asked}:"
+        f"len={len(cards)}:{_hand_snapshot(cards)}")
 
 
 def _adapt_play_card(proposed, state):
     index = proposed.source.index - 1
     if not 0 <= index < len(state.my_hand_cards):
-        raise RecommendationStateError("hand_slot_out_of_range")
+        raise _hand_slot_error("play", proposed.source.index,
+                               state.my_hand_cards)
     card = state.my_hand_cards[index]
     gap = None
     manual_target = None
@@ -227,7 +523,8 @@ def _adapt_play_card(proposed, state):
 def _adapt_trade_card(proposed, state):
     index = proposed.source.index - 1
     if not 0 <= index < len(state.my_hand_cards):
-        raise RecommendationStateError("hand_slot_out_of_range")
+        raise _hand_slot_error("trade", proposed.source.index,
+                               state.my_hand_cards)
     card = state.my_hand_cards[index]
     entity_id = getattr(card, "entity_id", None)
     manual = TradeCardAction(

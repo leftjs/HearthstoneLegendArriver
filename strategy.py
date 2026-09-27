@@ -31,6 +31,13 @@ class StrategyState:
         self.discover_choice_count = log_state.discover_choice_count
         self.my_player_id = log_state.my_player_id
         self.power_options = deepcopy(log_state.power_options)
+        # 本局学到过的泰坦技能顺序（card_id -> {下标: 技能名}）。
+        self.titan_ability_choices = deepcopy(
+            getattr(log_state, "titan_ability_choices", {}))
+        # 本局学到过的抉择/技能面板顺序（card_id -> {名字: 面板下标}）。
+        # 子项只在牌「当前可打出」时下发，学到一次就能整局按名字点对。
+        self.power_option_layouts = deepcopy(
+            getattr(log_state, "power_option_layouts", {}))
         self.hand_entry_count = log_state.hand_entry_count
         self.start_of_game_card_count = getattr(
             log_state, "start_of_game_card_count", 0)

@@ -296,6 +296,15 @@ def click_middle():
     left_click(960, 500)
 
 
+def choose_titan_ability(choice_index, choice_count):
+    """点击泰坦技能面板里的第 choice_index 个技能（0 基）。
+
+    实测：泰坦技能面板与「发现/抉择」共用同一套居中卡牌布局（三张技能牌一排，
+    y=500），所以直接复用 DISCOVER_CARD_X。若哪天实测位置变了，只改这里。
+    """
+    choose_discover_card(choice_index, choice_count)
+
+
 def click_setting():
     rand_sleep(OPERATE_INTERVAL)
     left_click(1895, 1060)

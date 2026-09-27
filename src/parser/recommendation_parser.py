@@ -11,34 +11,124 @@ class RecommendationParseError(ValueError):
     pass
 
 
+# 诊断串里保留的面板文本长度上限（含换行）。解析失败时日志里只有错误码，没有
+# 面板原文，事后无法判断是哪条推荐触发——这里把归一化文本一并带上，供排查。
+_ACTION_TEXT_DIAG_LIMIT = 200
+# 诊断用：把数字统一换成 '0' 再比对，号位差异就不参与判断。
+_DIGIT_DIAG = str.maketrans("123456789", "000000000")
+# 合法句式模板（数字已用 '0' 占位）。只服务「单字近似」诊断提示。
+_TEMPLATE_PATTERNS = (
+    "打出0号位随从", "打出0号位法术", "打出0号位武器", "打出0号位地标",
+    "打出0号位英雄", "替换0号位卡牌", "交易0号位卡牌", "锻造0号位卡牌",
+    "预备0号位卡牌", "放置于我方0号位", "放置于己方0号位", "操作0号位随从攻击",
+    "操作0号位泰坦", "操作0号位地标", "操作我方英雄攻击", "操作己方英雄攻击",
+    "目标是对方0号位", "目标是敌方0号位", "目标是己方0号位", "目标是我方0号位",
+    "目标是对方英雄", "目标是敌方英雄", "目标是己方英雄", "目标是我方英雄",
+    "选择我方0号位卡牌", "选择己方0号位卡牌",
+)
+def _digits_as_marker(line):
+    """把数字统一替换成 '0'，用于忽略号位差异的比对。"""
+    return re.sub(r"\d", "0", (line or "").translate(_DIGIT_DIAG))
+
+
+_TEMPLATE_MARKERS = tuple(
+    _digits_as_marker(template) for template in _TEMPLATE_PATTERNS)
+_TEMPLATE_BY_MARKER = dict(zip(_TEMPLATE_MARKERS, _TEMPLATE_PATTERNS))
+
+
+def _near_template(line):
+    """行与某个合法句式**只差一个字符**时返回 ``疑似模板(错字→正字)``。
+
+    这就是「OCR 认错一个字」的判据：用它把实际的错字摆到日志里，而不是靠我们
+    去猜「我/己/已/万」这类没有边界的混淆。
+    """
+    marker = _digits_as_marker(line)
+    if "0" not in marker:
+        return ""
+    for template in _TEMPLATE_MARKERS:
+        if len(template) != len(marker):
+            continue
+        diff = [(a, b) for a, b in zip(marker, template) if a != b]
+        if len(diff) != 1:
+            continue
+        wrong, right = diff[0]
+        return f"{_TEMPLATE_BY_MARKER[template]}({wrong}→{right})"
+    return ""
+
+
+def _action_text_diag(text):
+    """把归一化后的面板文本压成单行诊断串（保留全部行，仅替换换行）。"""
+    normalized = " / ".join(
+        line for line in (text or "").splitlines() if line.strip())
+    if not normalized:
+        return "(empty)"
+    if len(normalized) > _ACTION_TEXT_DIAG_LIMIT:
+        return normalized[:_ACTION_TEXT_DIAG_LIMIT] + "..."
+    return normalized
+
+
 class RecommendationParser:
     _mulligan = re.compile(r"^替换([1-9]\d*)号位卡牌$")
     _keep_all = "保留全部卡牌"
     _play = re.compile(r"^打出([1-9]\d*)号位(随从|法术|武器|地标|英雄)$")
     _trade = re.compile(r"^(?:交易|锻造|预备)([1-9]\d*)号位卡牌$")
-    _destination = re.compile(r"^放置于我方([1-9]\d*)号位$")
+    # 「己方」等写法统一由 _OCR_VARIANTS 归一化成「我方」，所以句式里只认
+    # 「我方」即可：保持**单一来源**，避免两处各列一遍写法而对不上。
+    _own = "我方"
+    _destination = re.compile(rf"^放置于{_own}([1-9]\d*)号位$")
     _minion_attack = re.compile(r"^操作([1-9]\d*)号位随从攻击$")
-    _hero_attack = re.compile(r"^操作我方英雄攻击$")
+    _titan_ability = re.compile(r"^操作([1-9]\d*)号位泰坦$")
+    _hero_attack = re.compile(rf"^操作{_own}英雄攻击$")
     _target = re.compile(
         r"^目标是(?:对方|敌方)([1-9]\d*)号位(?:随从)?$")
     _friendly_hand_target = re.compile(
-        r"^目标是(?:己方|我方)([1-9]\d*)号位(?:随从)?$")
+        rf"^目标是{_own}([1-9]\d*)号位(?:随从)?$")
     _enemy_hero_targets = {"目标是对方英雄", "目标是敌方英雄"}
     _friendly_hero_targets = {"目标是己方英雄", "目标是我方英雄"}
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
     _discover = re.compile(
-        r"^(?:选择我方([1-4])号位卡牌|选(?:择)?第([1-4])个选项)$")
+        rf"^(?:选择{_own}([1-4])号位卡牌|选(?:择)?第([1-4])个选项)$")
     # HSAng 时间线提示字：按钮文案可能是纯「回溯/维持」，也可能是带标题的
     # 「回溯时间线/维持时间线」（OCR 也可能把两者读成「回溯」+「时间线」两行，
     # 其中「时间线」非动作行会被过滤，只剩「回溯」）。
     _timeline = re.compile(r"^(回溯|维持)\s*(?:时间线)?$")
     _reference_a_headers = {"打法参考A", "打法参考Ａ"}
     _reference_b_headers = {"打法参考B", "打法参考Ｂ"}
+    # OCR 错字表：只收录**实测真的害过我们**、或字形确实近似到会认错的组合。
+    # 必须是**词组**（≥2 字）：单字全局替换会误伤卡名——实测卡名里含「术」738
+    # 个、「木」98 个、「我」84 个、「矛」93 个、「已」32 个，字符级替换必错。
+    #
+    #  已方→我方    我/已 字形接近。实测 2026-09-21 04:59、2026-09-22 16:35/19:16
+    #               三次卡手都是它：目标行匹配不上 → unsupported_spell_target
+    #  対→对        対/对（日文汉字）。实测同批日志出现；独立成字，卡名里没有
+    #  己方→我方    「己方」本身是合法写法，但面板两种写法混用；统一成「我方」
+    #               让下游（消费键、文本比对）看到一致的串
+    #  我万→我方    方/万 字形接近
+    #  両→两        日文汉字「両」← 两
+    #
+    # 新增条目请附「实测时间 + 触发的错误码」。无法确定时**不要加**：解析失败的
+    # 诊断里带 ``near=``，会自动指出「只差一个字」的候选与错字，照着加即可。
+    _OCR_VARIANTS = (
+        ("已方", "我方"),
+        ("己方", "我方"),
+        ("我万", "我方"),
+        ("対", "对"),
+        ("両", "两"),
+    )
+
+    @classmethod
+    def _fix_ocr_variants(cls, line):
+        """纠正 OCR 常见错字（字形相近），避免整条推荐无法解析。"""
+        fixed = line
+        for wrong, right in cls._OCR_VARIANTS:
+            fixed = fixed.replace(wrong, right)
+        return fixed
 
     @classmethod
     def normalize_action_text(cls, text):
         parser = cls()
         lines = parser._reference_a_lines(text or "")
+        lines = [cls._fix_ocr_variants(line) for line in lines]
         retained = []
         for index, line in enumerate(lines):
             if (parser._is_action_line(line)
@@ -53,7 +143,55 @@ class RecommendationParser:
         return "\n".join(retained)
 
     def parse(self, ocr, turn_number, log_revision):
+        """解析面板文本；任何失败都附带面板原文 + 单字近似候选。
+
+        失败消息形如 ``unsupported_spell_target:panel=打出2号位法术 / …``：
+        错误码保持在最前面（现有断言与日志检索都按码匹配），面板文本只作后缀。
+
+        额外带 ``near=`` —— 若有某一行「只差一个字符」就是合法句式，把它连同
+        修正后的样子一起打出来。这样新增 OCR 错字表时**只需收录真正害过我们的
+        字**，不必预先猜「我/己/已」这类没有边界的混淆。
+        """
         action_text = self.normalize_action_text(ocr.normalized_text)
+        try:
+            return self._parse_action(action_text, ocr, turn_number,
+                                      log_revision)
+        except RecommendationParseError as exc:
+            near = self._near_miss_hint(action_text)
+            suffix = f":near={near}" if near else ""
+            raise RecommendationParseError(
+                f"{exc}:panel={_action_text_diag(action_text)}{suffix}"
+            ) from None
+
+    def _near_miss_hint(self, action_text):
+        """找出「只差一个字符」就能匹配的合法句式；没有则返回空串。
+
+        只用于诊断，不改变解析结果：把 OCR 实际认错的字摆到眼前，避免我们
+        靠猜去扩错字表。合法句式由正则模板生成（数字位置用 ``0`` 占位、比较时
+        再把输入里的数字替换掉），所以不用手写模板列表。
+        """
+        lines = self._lines(action_text)
+        hints = []
+        for line in lines:
+            if self._is_known_line(line):
+                continue
+            template = _near_template(line)
+            if template:
+                hints.append(f"{line}→{template}")
+        return " / ".join(hints[:3])
+
+    def _is_known_line(self, line):
+        """这一行本身已经能被现有句式识别：近似提示只报认不出的行。"""
+        return bool(
+            self._is_action_line(line)
+            or self._destination.fullmatch(line)
+            or self._target.fullmatch(line)
+            or self._friendly_hand_target.fullmatch(line)
+            or line in self._enemy_hero_targets
+            or line in self._friendly_hero_targets
+            or line == "选择卡牌")
+
+    def _parse_action(self, action_text, ocr, turn_number, log_revision):
         lines = self._lines(action_text)
         if not lines:
             raise RecommendationParseError("empty_recommendation")
@@ -202,6 +340,18 @@ class RecommendationParser:
                                int(location.group(1))),
                 target=target)
 
+        titan = self._titan_ability.fullmatch(primary)
+        if titan:
+            # 泰坦：点自己场上的泰坦 → 技能面板里选「选择卡牌」后面那个技能名
+            # →（技能需要目标时）点目标。技能名由 _build 统一取出。
+            target = self._optional_board_or_hero_target(
+                lines, "unsupported_titan_target")
+            return self._build(
+                ocr, turn_number, log_revision, ActionKind.TITAN_ABILITY,
+                source=SlotRef("board_slot", "friendly",
+                               int(titan.group(1))),
+                target=target)
+
         if primary == "结束回合":
             self._reject_target_lines(lines)
             return self._build(
@@ -237,6 +387,7 @@ class RecommendationParser:
         return bool(self._mulligan.fullmatch(line) or self._play.fullmatch(line)
                     or self._trade.fullmatch(line)
                     or self._minion_attack.fullmatch(line)
+                    or self._titan_ability.fullmatch(line)
                     or self._hero_attack.fullmatch(line)
                     or self._location.fullmatch(line)
                     or self._discover.fullmatch(line)
@@ -281,13 +432,17 @@ class RecommendationParser:
         lines = action_text.splitlines()
         markers = [i for i, line in enumerate(lines) if line == "选择卡牌"]
         choice_name = None
-        if markers and action in (ActionKind.PLAY_CARD, ActionKind.USE_HERO_POWER):
+        if markers and action in (ActionKind.PLAY_CARD, ActionKind.USE_HERO_POWER,
+                                  ActionKind.TITAN_ABILITY):
             if len(markers) != 1 or markers[0] + 1 >= len(lines):
                 raise RecommendationParseError("choose_one_name_required")
             choice_name = lines[markers[0] + 1]
             if (RecommendationParser()._is_action_line(choice_name)
                     or "目标" in choice_name or choice_name.startswith("放置于")):
                 raise RecommendationParseError("choose_one_name_required")
+        if action == ActionKind.TITAN_ABILITY and choice_name is None:
+            # 没有技能名就无法确定点哪张技能牌，宁可重试也不猜着点。
+            raise RecommendationParseError("titan_ability_name_required")
         return ProposedAction(
             action_id=f"action-{uuid.uuid4()}", frame_id=ocr.frame_id,
             created_at=time.time(), turn_number=turn_number,

@@ -189,6 +189,24 @@ class LaunchStarshipAction:
 
 
 @dataclass(frozen=True)
+class TitanAbilityAction:
+    """「操作N号位泰坦」：点泰坦 → 选技能 →（可选）点目标。
+
+    技能面板（三张技能牌居中，与发现/抉择同一套布局）的位置由 ability_index
+    给出（0 基），ability_count 是技能张数；技能需要目标时再点 target。
+    后续 兵主 这类卡还会自己触发「发现」框，流程层按等待盒子更新处理。
+    """
+    titan_index: int
+    card_id: str
+    ability_index: int
+    ability_count: int
+    ability_name: Optional[str] = None
+    target: Optional[Target] = None
+    titan_entity_id: Optional[str] = None
+    turn_number: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class EndTurnAction:
     turn_number: Optional[int] = None
 
@@ -225,6 +243,7 @@ ManualAction = Union[
     UseLocationAction,
     AttackAction,
     LaunchStarshipAction,
+    TitanAbilityAction,
     EndTurnAction,
     RefreshAction,
     TimelineAction,
@@ -380,6 +399,33 @@ class ClickExecutor:
             starship_screen_index, board_count)
         self.click.click_launch_starship()
 
+    def titan_ability(self, titan_screen_index, board_count, ability_index,
+                      ability_count, target=None, my_count=0, oppo_count=0,
+                      cancel_first=True):
+        return self._safe_action(lambda: self._titan_ability(
+            titan_screen_index, board_count, ability_index, ability_count,
+            target, my_count, oppo_count, cancel_first))
+
+    def _titan_ability(self, titan_screen_index, board_count, ability_index,
+                       ability_count, target, my_count, oppo_count,
+                       cancel_first=True):
+        # 先右击清掉上一轮可能残留的技能面板/指向状态，保证重试能重新开始；
+        # 但若游戏正弹着「发现/抉择」这类必须点的选择框，就不要右击打扰它。
+        if cancel_first:
+            self.click.cancel_click()
+        self.click.choose_my_board_entity(titan_screen_index, board_count)
+        # 等技能面板弹出（三张技能牌居中，和发现/抉择同一套布局）。
+        self.sleep(0.3)
+        self._select_choose_one(
+            DiscoverChoiceAction(ability_index, ability_count),
+            getattr(self.click, "choose_titan_ability", None))
+        # 技能需要目标时再点目标。这里**不再右击取消**：兵主这类卡技能结算后
+        # 会紧接着弹出「发现对应符文的牌」，右击有把那个选择框点掉的风险，
+        # 而残留状态下一轮开头已经由 cancel_click 清掉。
+        if target is not None:
+            self.sleep(0.3)
+            self._click_target(target, my_count, oppo_count)
+
     def play_weapon(self, hand_index, hand_count):
         return self._safe_action(
             lambda: self._play_weapon(hand_index, hand_count))
@@ -417,10 +463,11 @@ class ClickExecutor:
         self._click_target(target, my_count, oppo_count)
         self.click.cancel_click()
 
-    def _select_choose_one(self, choice):
+    def _select_choose_one(self, choice, click_func=None):
         if choice is not None:
             self.sleep(0.3)
-            self.click.choose_discover_card(choice.choice_index, choice.choice_count)
+            click = click_func or self.click.choose_discover_card
+            click(choice.choice_index, choice.choice_count)
 
     def choose_discover_card(self, choice_index, choice_count):
         return self._safe_action(
@@ -953,6 +1000,39 @@ class ManualController:
                 return self._reject("星舰战场位置已经失效，未执行发射。")
             self.executor.launch_starship(zone_pos - 1, board_count)
             return ActionExecutionResult(True, "已发射星舰。")
+
+        if isinstance(action, TitanAbilityAction):
+            if not 0 <= action.titan_index < len(state.my_minions):
+                return self._reject("泰坦位置已经失效，未执行操作。")
+            titan = state.my_minions[action.titan_index]
+            if titan.card_id != action.card_id:
+                return self._reject("泰坦内容已经变化，未执行操作。")
+            if (action.titan_entity_id is not None
+                    and getattr(titan, "entity_id", None)
+                    != action.titan_entity_id):
+                return self._reject("泰坦对象已经变化，未执行操作。")
+            if (action.ability_count not in (1, 2, 3, 4)
+                    or not 0 <= action.ability_index < action.ability_count):
+                return self._reject("泰坦技能选项已经失效，未执行操作。")
+            if not self._target_exists(action.target, state):
+                return self._reject("泰坦技能目标已经不存在，未执行操作。")
+            zone_pos = getattr(titan, "zone_pos", 0)
+            board_count = self._board_slot_count(state, "friendly")
+            if not 1 <= zone_pos <= board_count:
+                return self._reject("泰坦战场位置未知，未执行操作。")
+            self.executor.titan_ability(
+                zone_pos - 1,
+                board_count,
+                action.ability_index,
+                action.ability_count,
+                self._target_for_click(action.target, state),
+                board_count,
+                self._board_slot_count(state, "enemy"),
+                # 游戏正弹着「发现/抉择」时必须点的选择框时不要右击打扰它。
+                cancel_first=getattr(state, "discover_choice_count", None) is None,
+            )
+            name = action.ability_name or f"{action.ability_index + 1}号位技能"
+            return ActionExecutionResult(True, f"已使用泰坦技能：{name}")
 
         if isinstance(action, AttackAction):
             if not self._target_exists(action.attacker, state):

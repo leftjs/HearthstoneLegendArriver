@@ -13,6 +13,7 @@ class ActionKind(str, Enum):
     ATTACK = "attack"
     USE_LOCATION = "use_location"
     CHOOSE_DISCOVER = "choose_discover"
+    TITAN_ABILITY = "titan_ability"
     END_TURN = "end_turn"
     TIMELINE_UNDO = "timeline_undo"
     TIMELINE_KEEP = "timeline_keep"
@@ -56,6 +57,10 @@ class OcrEvidence:
     confidence: float
     backend: str
     preprocessing: str
+    # 过滤前的完整面板行（含「打法参考A/B」标题与牌名说明行）。``lines`` 只保留
+    # 复核通过的行，事后排查卡手时看不出盒子原文，所以另存一份。
+    raw_lines: tuple[OcrLine, ...] = ()
+    raw_text: str = ""
 
 
 @dataclass(frozen=True)

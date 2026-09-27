@@ -1,6 +1,6 @@
 """Execute exactly one validated recommendation and verify its result."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import time
 
@@ -11,6 +11,55 @@ from src.safety.recommendation_validator import ConsumedActionStore
 
 # 「回合号还没记录过」的哨兵：不能用 None，因为有些状态里回合号就是 None。
 _UNSET_TURN = object()
+
+PANEL_DIAG_LIMIT = 400
+
+# 适配器在「手牌槽位与盒子文本对不上」时抛的诊断码（见
+# recommendation_adapter._with_choose_one）。命中它说明我们手里的槽位/实体号
+# 已经和真实手牌不一致，光等下一条 Power.log 增量救不回来——这里主动重建一次
+# 手牌快照再适配一次（见 `_adapt_with_rebuild`）。
+_REBUILD_ON_ADAPT_CODES = ("choose_one_card_unknown",)
+
+
+def _raw_panel_diag(evidence):
+    """面板**原始**文本（含标题行/牌名行）的单行速写。
+
+    解析失败时进入日志的是归一化文本，牌名行已被剥掉；这里补上 OCR 原文，
+    才能看出盒子当时到底写了什么。
+    """
+    raw_lines = (getattr(evidence, "raw_lines", ())
+                 or getattr(evidence, "lines", ()))
+    parts = [part for part in (str(getattr(line, "text", "") or "").strip()
+                               for line in raw_lines) if part]
+    text = " | ".join(parts) if parts else str(
+        getattr(evidence, "raw_text", "") or "")
+    text = " ".join(text.split())
+    if not text:
+        return "(empty)"
+    if len(text) > PANEL_DIAG_LIMIT:
+        text = text[:PANEL_DIAG_LIMIT] + "..."
+    return text
+
+
+def _panel_diag(evidence, proposed):
+    """盒子面板的可读单行速写：优先用 OCR 原文（含牌名/标题），回退到解析文本。
+
+    诊断串会原样进入浮窗日志（``retry:<诊断>``），所以压成单行并限长。
+    """
+    raw_lines = getattr(evidence, "raw_lines", ()) or getattr(
+        evidence, "lines", ())
+    parts = [getattr(line, "text", "") for line in raw_lines]
+    parts = [part for part in (p.strip() for p in parts) if part]
+    text = " | ".join(parts) if parts else getattr(
+        evidence, "raw_text", "")
+    text = " ".join(str(text or "").split())
+    instruction = " ".join(
+        str(getattr(proposed, "normalized_instruction", "") or "").split())
+    if not text:
+        text = instruction or "(empty)"
+    if len(text) > PANEL_DIAG_LIMIT:
+        text = text[:PANEL_DIAG_LIMIT] + "..."
+    return text
 
 
 class FlowStepStatus(str, Enum):
@@ -39,7 +88,8 @@ class RecommendationFlow:
                  consumed=None, post_action_delay=0.0,
                  post_action_pause=None,
                  hand_animation_delay=None,
-                 draw_extra_delay_per_card=0.0):
+                 draw_extra_delay_per_card=0.0,
+                 rebuild_state=None):
         self.capture = capture
         self.reader = reader
         self.parser = parser
@@ -74,10 +124,55 @@ class RecommendationFlow:
             hand_animation_delay
             if hand_animation_delay is not None
             else HandAnimationDelay(clock=clock))
+        # 「手牌槽位对不上」时的强制重建钩子：无参调用，返回 (state, revision)；
+        # 未注入时退化为不重建（只保留诊断），保证测试与旧调用方行为不变。
+        self.rebuild_state = rebuild_state
         self.waiting_instruction = None
         self.waiting_panel_hash = None
         self.waiting_turn_number = None
         self.waiting_action_kind = None
+
+    def _adapt_with_rebuild(self, proposed, state, revision):
+        """适配一次；命中「槽位对不上」时重建手牌快照再适配一次。
+
+        只对 `_REBUILD_ON_ADAPT_CODES` 里的诊断码生效，且**每轮重试只重建一次**，
+        避免在真卡手时把死循环变成"重建风暴"。重建拿不到新状态就退回原诊断。
+
+        返回 ``(adapted, proposed, state, revision, error)``：适配失败时 ``adapted``
+        为 None，``error`` 是最后一次的异常（已含重建结果）。
+
+        **重建成功时必须把 proposed.log_revision 一起换新**：强制重建会调用
+        ``update_log_state()`` 吃掉新的 Power.log 行，``log_state.revision`` 因此前进
+        （实测 2026-09-27：7 → 42），而 ``proposed`` 还带着解析时的旧 revision。
+        紧随其后的校验器会以 ``revision_changed:proposed=7:current=42`` 拒掉这一轮，
+        重建就白做了（用户会看到"重建了但一下都没点"）。这里直接对齐 revision，
+        让重建出来的适配结果当场可用。
+        """
+        try:
+            return self.adapter(proposed, state), proposed, state, revision, None
+        except Exception as exc:                # noqa: BLE001
+            first_error = exc
+        if not self._needs_rebuild(first_error) or self.rebuild_state is None:
+            return None, proposed, state, revision, first_error
+        try:
+            rebuilt, rebuilt_revision = self.rebuild_state()
+        except Exception:                       # noqa: BLE001
+            return None, proposed, state, revision, first_error
+        if rebuilt is None:
+            return None, proposed, state, revision, first_error
+        # 重建后状态是新的，proposed 的 revision 也要跟上（见上面的 docstring）。
+        if rebuilt_revision is not None:
+            proposed = replace(proposed, log_revision=rebuilt_revision)
+        try:
+            adapted = self.adapter(proposed, rebuilt)
+        except Exception as exc:                # noqa: BLE001
+            return None, proposed, rebuilt, rebuilt_revision, exc
+        return adapted, proposed, rebuilt, rebuilt_revision, None
+
+    @staticmethod
+    def _needs_rebuild(exc):
+        text = f"{type(exc).__name__}:{exc}"
+        return any(code in text for code in _REBUILD_ON_ADAPT_CODES)
 
     def run_player_turn_step(self):
         try:
@@ -102,13 +197,29 @@ class RecommendationFlow:
             stable_frame = observed["frame"]
             if self.waiting_instruction is not None:
                 self._clear_waiting()
-            proposed = self.parser.parse(
-                evidence, state.game_num_turns_in_play, revision)
+            try:
+                proposed = self.parser.parse(
+                    evidence, state.game_num_turns_in_play, revision)
+            except Exception as exc:
+                # 解析失败时推荐文本从未打印过（print 在 parse 之后），
+                # 这里把 OCR 原文（含牌名行）补进诊断。
+                return FlowStepResult(
+                    FlowStepStatus.RETRY,
+                    f"{type(exc).__name__}:{exc}"
+                    f":raw_panel={_raw_panel_diag(evidence)}")
             if proposed.action == ActionKind.MULLIGAN:
                 return FlowStepResult(
                     FlowStepStatus.OBSERVE,
                     "stale_mulligan_recommendation")
-            adapted = self.adapter(proposed, state)
+            adapted, proposed, state, revision, adapt_error = (
+                self._adapt_with_rebuild(proposed, state, revision))
+            if adapt_error is not None:
+                # 适配失败时盒子原文从未打印过（print 在适配之后），补进诊断：
+                # 卡手排查需要知道「盒子到底说了什么」。
+                return FlowStepResult(
+                    FlowStepStatus.RETRY,
+                    f"{type(adapt_error).__name__}:{adapt_error}"
+                    f":panel={_panel_diag(evidence, proposed)}")
             fresh_state, fresh_revision = self._wait_for_hand_animation()
             current_frame = self.capture.capture(ocr_panel_ok=True)
             current_evidence = self.reader.read_frame(
@@ -169,8 +280,10 @@ class RecommendationFlow:
                 # A discover click is not complete while Power.log still
                 # exposes a choice UI.  Keep it retryable until that UI
                 # closes; all other confirmed actions retain duplicate
-                # execution protection.
-                if proposed.action != ActionKind.CHOOSE_DISCOVER:
+                # execution protection. 泰坦技能同理：点完泰坦/技能/目标后
+                # 不再重复点，等盒子更新推荐（兵主这类还会弹出「发现」框）。
+                if proposed.action not in (ActionKind.CHOOSE_DISCOVER,
+                                           ActionKind.TITAN_ABILITY):
                     self.consumed.mark_consumed(key)
                 self.waiting_instruction = proposed.normalized_instruction
                 self.waiting_panel_hash = current_frame.perceptual_hash
@@ -179,8 +292,11 @@ class RecommendationFlow:
                 return FlowStepResult(
                     FlowStepStatus.OBSERVE,
                     "waiting_recommendation_update")
+            # 执行成功但结果没被确认：把盒子原文一并带出，便于事后判断是
+            # 「点击没生效」还是「盒子给的动作本身无法完成」。
             return FlowStepResult(
-                FlowStepStatus.RETRY, "result_not_confirmed")
+                FlowStepStatus.RETRY,
+                f"result_not_confirmed:panel={_panel_diag(evidence, proposed)}")
         except Exception as exc:
             return FlowStepResult(
                 FlowStepStatus.RETRY,
@@ -319,6 +435,11 @@ class RecommendationFlow:
             return ResultStatus.WAITING_RECOMMENDATION
         if proposed.action == ActionKind.CHOOSE_DISCOVER:
             return ResultStatus.WAITING_RECOMMENDATION
+        if proposed.action == ActionKind.TITAN_ABILITY:
+            # 「点泰坦→选技能→（可选）点目标」是一次性三步操作，绝不重复点：
+            # 技能结算后盒子会给出下一步推荐（兵主还有「发现对应符文的牌」），
+            # 所以这里统一按“等盒子更新推荐”处理。
+            return ResultStatus.WAITING_RECOMMENDATION
         if log_changed:
             return ResultStatus.WAITING_RECOMMENDATION
         return ResultStatus.RETRY
@@ -383,6 +504,34 @@ class RecommendationFlow:
                 new is None
                 or getattr(new, "card_id", None)
                 != getattr(old, "card_id", None))
+        if kind == "titan_ability_used":
+            # 泰坦技能：泰坦本体会被标记为已行动（EXHAUSTED 0→1）、可能掉血/
+            # 加血；技能还会改场面/手牌（邪恶符文召唤、鲜血符文消灭目标），
+            # 兵主这类结算完立刻弹出「发现」框（GENERAL choice 出现）。
+            # 任意一条成立就认为技能确实打出去了。
+            old_titan = RecommendationFlow._entity_by_id(
+                before.my_minions, source_entity_id)
+            new_titan = RecommendationFlow._entity_by_id(
+                after.my_minions, source_entity_id)
+            if old_titan is not None and (
+                    new_titan is None
+                    or getattr(new_titan, "exhausted", 0)
+                    != getattr(old_titan, "exhausted", 0)
+                    or getattr(new_titan, "damage", 0)
+                    != getattr(old_titan, "damage", 0)
+                    or getattr(new_titan, "max_health", 0)
+                    != getattr(old_titan, "max_health", 0)):
+                return True
+            if (getattr(after, "discover_choice_count", None)
+                    != getattr(before, "discover_choice_count", None)):
+                return True
+            if (RecommendationFlow._board_signature(after)
+                    != RecommendationFlow._board_signature(before)):
+                return True
+            return (tuple(getattr(card, "entity_id", None)
+                          for card in after.my_hand_cards)
+                    != tuple(getattr(card, "entity_id", None)
+                             for card in before.my_hand_cards))
         if kind == "combat_state_changed":
             old_source = RecommendationFlow._entity_by_id(
                 before.my_minions, source_entity_id)
@@ -417,3 +566,13 @@ class RecommendationFlow:
     def _entity_by_id(collection, entity_id):
         return next((entity for entity in collection
                      if getattr(entity, "entity_id", None) == entity_id), None)
+
+    @staticmethod
+    def _board_signature(state):
+        """场面指纹：随从顺序 + 每个随从的 id/伤害/生命上限。"""
+        return tuple(
+            (getattr(entity, "entity_id", None),
+             getattr(entity, "damage", 0),
+             getattr(entity, "max_health", 0))
+            for entity in (tuple(getattr(state, "my_minions", ()))
+                           + tuple(getattr(state, "oppo_minions", ()))))
