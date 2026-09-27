@@ -84,6 +84,12 @@ hearthstone_liveness = default_monitor()
 _liveness_alert = None
 # 连续“推荐读取失败（RETRY）”次数：只作为存活告警文案里的旁证，帮助判断卡在哪。
 _ocr_fail_streak = 0
+# 真正的卡手（连续**同一条**失败很多次）才会告警：偶发两三次重试是执行过快、
+# 上一步动画没跑完，属于正常噪声；换了下一条推荐说明流程在动，计数归零。
+# 达到阈值只提示一次，链路上恢复（OBSERVE/EXECUTED）后重新计数。
+_STUCK_ALERT_THRESHOLD = 10
+_stuck_alerted = False
+_last_retry_code = None
 # 调试快照写盘节流：日志每次变化都全量序列化整个 log_state 会拖慢主循环，
 # 只在间隔 SNAPSHOT_WRITE_INTERVAL 秒后重新写盘。（定义于 config.py）
 _last_snapshot_write = 0.0
@@ -178,6 +184,7 @@ def initialize_recommendation_automation():
             recommendation_config.draw_extra_delay_per_card_seconds),
         post_action_pause=_human_like_post_action_pause,
         stopped=shutdown_event.is_set,
+        rebuild_state=rebuild_snapshot_for_retry,
     )
 
 
@@ -304,16 +311,35 @@ def update_log_state():
     return True
 
 
-def refresh_snapshot():
-    """Read pending Power.log events and build a fresh manual snapshot."""
+def refresh_snapshot(force=False):
+    """Read pending Power.log events and build a fresh manual snapshot.
+
+    ``force=True`` 时即使 ``(game_generation, revision)`` 没变也重建一次
+    ``StrategyState``。用于「手牌槽位与盒子文本对不上」这类错误：那种情况下
+    快照缓存里的 ``my_hand_cards`` 已知不可信，必须按当前 ``log_state`` 重算，
+    不能沿用缓存对象。
+    """
     global _snapshot_cache_key, _snapshot_cache
     if not update_log_state():
         return None
     cache_key = (log_state.game_generation, log_state.revision)
-    if cache_key != _snapshot_cache_key:
+    if force or cache_key != _snapshot_cache_key:
         _snapshot_cache = StrategyState(log_state)
         _snapshot_cache_key = cache_key
     return _snapshot_cache
+
+
+def rebuild_snapshot_for_retry():
+    """强制重建一次快照，返回 ``(state, revision)``；失败返回 ``(None, None)``。
+
+    注入给 ``RecommendationFlow`` 的 ``rebuild_state`` 钩子：适配器报
+    ``choose_one_card_unknown`` 时，flow 会调它重算 ``my_hand_cards`` 再适配一次。
+    """
+    state = refresh_snapshot(force=True)
+    if state is None:
+        return None, None
+    state.log_revision = log_state.revision
+    return state, log_state.revision
 
 
 def wait_for_log_update(start_revision=None, timeout=2.0):
@@ -970,6 +996,7 @@ def _do_concede():
 def run_automatic_battle_step():
     """Observe opponent turns; execute one newly validated player action."""
     global player_turn_delay_key, last_automation_diagnostic, _ocr_fail_streak
+    global _stuck_alerted, _last_retry_code
 
     snapshot = refresh_snapshot()
     if snapshot is None:
@@ -1020,17 +1047,41 @@ def run_automatic_battle_step():
 
     result = recommendation_flow.run_player_turn_step()
     if result.status == FlowStepStatus.RETRY:
-        # 连续读取失败计数：存活检测告警里会带上它（issue 建议的“辅以 OCR
-        # 连续失败计数”，便于区分“炉石没了”与“盒子没面板”）。
-        _ocr_fail_streak += 1
+        # 卡手判据：**同一条诊断连续重复**才算卡住。偶发两三次重试是执行过快、
+        # 上一步动画没跑完；换了下一条推荐（诊断码变了）说明流程在动，计数归零。
+        # 早期版本只累加「连续 RETRY 次数」而不看码，会把一局里零散的
+        # result_not_confirmed 凑成 10 次而误报（2026-09-20 23:46:37 实例）。
+        if result.diagnostics == _last_retry_code:
+            _ocr_fail_streak += 1
+        else:
+            _last_retry_code = result.diagnostics
+            _ocr_fail_streak = 1
+            _stuck_alerted = False
         if result.diagnostics == "discover_choice_still_open":
             message = "发现选择仍在，准备重新点击。"
         else:
             message = (
                 "当前推荐暂不可执行，继续重试："
                 f"{result.diagnostics}")
-        _report_automation_diagnostic(
-            f"retry:{result.diagnostics}", message)
+        # 诊断码只在里程碑处换（1..5 次、之后每 10 次）：去重逻辑按码输出，
+        # 于是同一条卡手会留下 `#1 #2 #3 #4 #5 #10 #20 …` 的递增痕迹，既看得出
+        # 重复到什么程度，又把行数压到个位数（诊断串现在带盒子面板原文，很长）。
+        # 后缀必须每次都带数字：否则去掉后缀时会退化成基础码，又被当成新码重发。
+        if _ocr_fail_streak <= 5 or _ocr_fail_streak % 10 == 0:
+            repeat = f"#{_ocr_fail_streak}"
+        else:
+            repeat = None
+        if repeat is not None:
+            _report_automation_diagnostic(
+                f"retry:{result.diagnostics}{repeat}", message)
+        if (_ocr_fail_streak >= _STUCK_ALERT_THRESHOLD
+                and not _stuck_alerted):
+            _stuck_alerted = True
+            manual_controller.output(
+                f"[SYS] ⚠️ 已连续 {_ocr_fail_streak} 次卡在同一步："
+                f"{result.diagnostics}。"
+                "可能卡住了（推荐面板不可读 / 场面状态与盒子不一致），"
+                "建议查看游戏画面确认。")
     elif result.status == FlowStepStatus.OBSERVE:
         observe_messages = {
             "opponent_turn": "等待对手操作。",
@@ -1045,6 +1096,8 @@ def run_automatic_battle_step():
     else:
         # 成功执行/观察都算“本条链路是通的”，清空连续失败计数。
         _ocr_fail_streak = 0
+        _stuck_alerted = False
+        _last_retry_code = None
         last_automation_diagnostic = None
     return None
 
