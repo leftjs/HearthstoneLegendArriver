@@ -361,6 +361,15 @@ class ClickExecutor:
                 self.click.choose_and_use_spell(hand_index, hand_count)
         else:
             self.click.choose_card(hand_index, hand_count)
+            # 等手牌抬起、游戏进入「指向模式」再点目标。
+            # 实测 2026-10-07 17:33 的卡手：机器人连点 6 次「打出1号位法术 妖术 /
+            # 目标是对方3号位 怨毒大厨」全部 result_not_confirmed，而 Power.log 里
+            # 那 27 秒**一个 BlockType=PLAY 都没有**（法力没扣、牌没离手、
+            # NUM_CARDS_PLAYED_THIS_TURN 始终 0），游戏只是一直停在「等你点目标」；
+            # 同一张牌、同一个目标手动点一次就成。判据就是这两下挨得太近——
+            # 目标那一下早于指向模式打开，被当成普通点击吞掉。
+            # `_play_minion` 早就为此留了停顿（见上面 0.9/0.4 那处），指向类法术漏了。
+            self.sleep(0.4)
             self._click_target(target, my_count, oppo_count)
         self.click.cancel_click()
 
