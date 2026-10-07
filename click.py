@@ -157,7 +157,24 @@ def run_hearthstone_action(action):
         return action()
 
 
+def _debug_click(text):
+    """把每次点击的实际坐标写进浮窗日志。
+
+    2026-09-10 之后这段日志被去掉了，结果 2026-10-07 17:33 那次「点了 6 次、
+    游戏端一个 PLAY 块都没有」的卡手完全没法从日志判断点到了哪里，只能靠猜。
+    坐标是这类问题唯一的硬证据，所以恢复；用 info_print 且吞掉异常，
+    保证诊断本身永远不会影响点击。
+    """
+    try:
+        info_print(f"[CLICK] {text}")
+    except Exception:
+        pass
+
+
 def _send_physical_click(mouse, x, y, button):
+    # 日志用**最终**坐标（left_click 已经加过随机抖动）：诊断时看到的必须是
+    # 真正发出去的那个点，而不是调用方传进来的名义坐标。
+    _debug_click(f"{'left' if button == Button.left else 'right'}点 ({x},{y})")
     mouse.position = (x, y)
     rand_sleep(0.1)
     mouse.press(button)
@@ -198,6 +215,7 @@ def choose_my_board_entity(entity_index, entity_num):
     rand_sleep(OPERATE_INTERVAL)
     x = 960 - (entity_num - 1) * 70 + entity_index * 140
     y = 600
+    _debug_click(f"我方场面第 {entity_index + 1} 个（共{entity_num}个）x={x}")
     left_click(x, y)
 
 
@@ -214,6 +232,7 @@ def choose_opponent_minion(oppo_index, oppo_num):
     rand_sleep(OPERATE_INTERVAL)
     x = 960 - (oppo_num - 1) * 70 + oppo_index * 140
     y = 400
+    _debug_click(f"对方场面第 {oppo_index + 1} 个（共{oppo_num}个）x={x}")
     left_click(x, y)
 
 
@@ -255,6 +274,9 @@ def choose_card(card_index, card_num):
     x = HAND_CARD_X[card_num][card_index]
 
     y = 1000
+    # 手牌槽位单独记一条：坐标日志只能看出「点在哪个点」，看不出「以为手牌几张」。
+    # 若这里的手牌张数/槽位与真实不符，就会点到空位，游戏端表现为「什么都没发生」。
+    _debug_click(f"手牌第 {card_index + 1} 槽（共{card_num}张）x={x}")
     left_click(x, y)
 
 
