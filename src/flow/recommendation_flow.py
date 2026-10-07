@@ -89,8 +89,7 @@ class RecommendationFlow:
                  post_action_pause=None,
                  hand_animation_delay=None,
                  draw_extra_delay_per_card=0.0,
-                 rebuild_state=None,
-                 verify_state=None):
+                 rebuild_state=None):
         self.capture = capture
         self.reader = reader
         self.parser = parser
@@ -128,9 +127,6 @@ class RecommendationFlow:
         # 「手牌槽位对不上」时的强制重建钩子：无参调用，返回 (state, revision)；
         # 未注入时退化为不重建（只保留诊断），保证测试与旧调用方行为不变。
         self.rebuild_state = rebuild_state
-        # 「点鼠标前重读一次状态」的钩子（同样是 (state, revision)）。正式运行注入
-        # force 重建版本；未注入时退化为 state_supplier，再退化为不校验。
-        self.verify = verify_state
         self.waiting_instruction = None
         self.waiting_panel_hash = None
         self.waiting_turn_number = None
@@ -240,21 +236,6 @@ class RecommendationFlow:
             if not validation.accepted:
                 return FlowStepResult(FlowStepStatus.RETRY, validation.code)
             adapted, key = validation.value
-            # 点下去之前的最后一次复核：强制重读一次 Power.log 再确认还是我们的回合。
-            # 上面所有状态读取都发生在校验之前，而「校验通过 → 真正点鼠标」之间还隔着
-            # 日志打印与执行器准备；这段时间足够回合结束。实测 2026-10-07 20:45:38：
-            # 盒子给「打出4号位法术 / 妖术 / 目标是对方3号位」，机器人点完手牌又点目标，
-            # 但 Power.log 里**我们那张妖术始终没有 PLAY 块**，而同一时刻的 options 块
-            # 把我方英雄与随从全部标成 REQ_YOUR_TURN（= 已经是对手回合）。回合在我们
-            # 动作中途结束，于是点击全部空转，一路 result_not_confirmed 到用户手动打出。
-            # 这里宁可这一轮不点、让外层重试，也不要在对手回合空点。
-            click_state, click_revision, blocked = self._fresh_state_before_click(
-                proposed, adapted)
-            if blocked:
-                return FlowStepResult(
-                    FlowStepStatus.RETRY, click_revision)
-            if click_state is not None:
-                fresh_state, fresh_revision = click_state, click_revision
             print(f"[推荐] {proposed.normalized_instruction}")
             print("[执行] 开始点击。")
             result = self.controller.execute(adapted.manual_action, fresh_state)
@@ -331,52 +312,6 @@ class RecommendationFlow:
             if remaining <= 0:
                 return state, revision
             self.sleep(remaining)
-
-    def _fresh_state_before_click(self, proposed, adapted):
-        """点鼠标前的强制复核：重读最新状态，确认回合/动作仍然有效。
-
-        返回 ``(state, revision, blocked)``：
-          * 未注入钩子        -> ``(None, "", False)``，调用方直接跳过复核；
-          * 复核通过          -> 真实状态 + ``blocked=False``；
-          * 复核不通过        -> ``blocked=True``，revision 位置放诊断码。
-
-        之所以要第三个返回值：``(None, "")`` 既要表示「跳过」又要表示「拒绝」的话，
-        未注入钩子的调用方会把「跳过」当成「拒绝」，一律不动手。
-
-        `self.verify` 是「重读一次 Power.log 并给最新快照」的钩子（正式运行注入的是
-        FSM_action.rebuild_snapshot_for_retry，会 **force 重建**，不吃缓存）。
-        **没有注入时完全跳过这次复核**：不再多调一次 state_supplier ——
-        那会多消耗一份快照，打乱既有调用方的状态序列（实测会让 9 个用
-        state_supplier 迭代器喂状态的用例失败）。
-        """
-        provider = self.verify
-        if provider is None:
-            return None, "", False
-        try:
-            observed = provider()
-        except Exception:                      # noqa: BLE001
-            return None, "", False
-        if isinstance(observed, tuple):
-            state, revision = observed
-        else:
-            state, revision = observed, None
-        if state is None:
-            return None, "", False
-        # 用 proposed.turn_number 比对：manual_action 上的 turn_number 是
-        # ManualController.execute 里才补上的（见 manual_controller.py 的
-        # `action, turn_number=state.game_num_turns_in_play`），这里读它永远是 None，
-        # 会变成一段永不生效的死代码。
-        expected = getattr(proposed, "turn_number", None)
-        action = getattr(adapted, "manual_action", None)
-        if expected is None and action is not None:
-            expected = getattr(action, "turn_number", None)
-        if (expected is not None
-                and expected != state.game_num_turns_in_play):
-            return None, (f"turn_ended_before_click:proposed={expected}"
-                          f":current={state.game_num_turns_in_play}"), True
-        if not getattr(state, "is_my_turn", False):
-            return None, "not_my_turn_before_click", True
-        return state, revision, False
 
     # -------------------------------------------------- 抽牌额外延时（回合内抽牌）
     @staticmethod

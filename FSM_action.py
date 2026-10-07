@@ -185,9 +185,6 @@ def initialize_recommendation_automation():
         post_action_pause=_human_like_post_action_pause,
         stopped=shutdown_event.is_set,
         rebuild_state=rebuild_snapshot_for_retry,
-        # 点鼠标前重读一次 Power.log 并强制重建快照：避免「校验通过 → 真正点下去」
-        # 之间回合已经结束，仍在对手回合空点（2026-10-07 20:45 那次妖术卡手）。
-        verify_state=rebuild_snapshot_for_retry,
     )
 
 
