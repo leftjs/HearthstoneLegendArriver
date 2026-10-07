@@ -255,9 +255,21 @@ class ClickExecutor:
 
     def __init__(self, click_module=None, focus_func=None, sleep_func=None,
                  action_context=None):
+        real_click_module = click_module is None
         if click_module is None:
             import click as click_module
         self.click = click_module
+        # 诊断出口：只有用真 click 模块时才往浮窗日志写，测试替身不会被影响。
+        if real_click_module:
+            def _logger(message):
+                try:
+                    from print_info import info_print
+                    info_print(message)
+                except Exception:
+                    pass
+            self.logger = _logger
+        else:
+            self.logger = lambda _message: None
         if action_context is None:
             namespace = getattr(click_module, "__dict__", {})
             action_context = namespace.get("hearthstone_action_session")
@@ -340,6 +352,18 @@ class ClickExecutor:
 
     def _play_spell(self, hand_index, hand_count, target, my_count,
                     oppo_count, choose_one=None):
+        # 出牌现场快照：2026-10-07 20:45:42 那次「第二张妖术」实测点了
+        # left点(958,501) 且日志里没有「对方场面第 N 个」那行 —— 说明走的是
+        # **无目标分支**；可 adapter 明明算出了 Target(enemy,minion,index=3,eid=168)，
+        # 单测里也复现出正确的 choose_opponent_minion(i=3,n=4)->x=1170。
+        # 差异只可能在「传进来的是什么」，所以这里把它原样打出来。
+        try:
+            self.logger("[SPELL] target=%r hand_index=%s hand_count=%s "
+                        "choose_one=%r my=%s oppo=%s"
+                        % (target, hand_index, hand_count, choose_one,
+                           my_count, oppo_count))
+        except Exception:
+            pass
         if choose_one is not None:
             # Cancel a previous incomplete Choose One attempt before reopening
             # it. No cancel may occur between opening and choosing the option.
