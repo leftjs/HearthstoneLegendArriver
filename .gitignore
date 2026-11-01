@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .venv/
 .venv-release/
+venv312/
 img/
 backup.md
 test-model-cache/
