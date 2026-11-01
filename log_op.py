@@ -81,18 +81,24 @@ TAG_PATTERN = re.compile(r" *tag=(.*) value=(.*)")
 GENERAL_CHOICE_START_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
     r"GameState\.DebugPrintEntityChoices\(\) - id=(\d+) .*"
-    r"ChoiceType=GENERAL(?: .*)?$")
+    r"ChoiceType=(GENERAL|TARGET)(?: .*)?$")
 GENERAL_CHOICE_ENTITY_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
     r"GameState\.DebugPrintEntityChoices\(\) - +Entities\[(\d+)\]="
     r".* player=(\d+)\]$")
+# 指向选择（ChoiceType=TARGET）也要靠 Source 的 player 区分「我方在选目标」。
+GENERAL_CHOICE_SOURCE_PATTERN = re.compile(
+    r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
+    r"GameState\.DebugPrintEntityChoices\(\) - +Source=(.*)$")
+CHOICE_SOURCE_DESCRIPTOR_PATTERN = re.compile(
+    r"\[entityName=.*? id=(\d+) zone=\w+ zonePos=\d+ cardId=(\S*) player=(\d+)\]")
 GENERAL_CHOICE_READY_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
     r"ChoiceCardMgr\.WaitThenShowChoices\(\) - id=(\d+) "
     r"(?:WAIT(?: .*)?|BEGIN)$")
 GENERAL_CHOICE_RESOLVED_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
-    r"GameState\.SendChoices\(\) - id=(\d+) ChoiceType=GENERAL$")
+    r"GameState\.SendChoices\(\) - id=(\d+) ChoiceType=(?:GENERAL|TARGET)$")
 
 # Choose One uses the playable action's subOptions, not GENERAL choices.
 POWER_OPTIONS_PATTERN = re.compile(
@@ -181,6 +187,7 @@ def parse_line(line_str):
         return LineInfoContainer(
             LOG_LINE_GENERAL_CHOICE_START,
             choice_id=match_obj.group(1),
+            choice_type=match_obj.group(2),
         )
 
     match_obj = GENERAL_CHOICE_ENTITY_PATTERN.match(line_str)
@@ -190,6 +197,18 @@ def parse_line(line_str):
             choice_id=None,
             index=int(match_obj.group(1)),
             player=match_obj.group(2),
+        )
+
+    match_obj = GENERAL_CHOICE_SOURCE_PATTERN.match(line_str)
+    if match_obj is not None:
+        descriptor = CHOICE_SOURCE_DESCRIPTOR_PATTERN.search(
+            match_obj.group(1))
+        return LineInfoContainer(
+            LOG_LINE_GENERAL_CHOICE_SOURCE,
+            choice_id=None,
+            entity_id=descriptor.group(1) if descriptor else None,
+            card_id=descriptor.group(2) if descriptor else "",
+            player=descriptor.group(3) if descriptor else None,
         )
 
     match_obj = GENERAL_CHOICE_READY_PATTERN.match(line_str)

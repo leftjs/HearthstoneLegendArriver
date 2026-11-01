@@ -165,6 +165,19 @@ class DiscoverChoiceAction:
 
 
 @dataclass(frozen=True)
+class ChooseTargetAction:
+    """指向选择：游戏正在等我方为一个已经选好的效果点目标。
+
+    盒子的指令是「选择对方N号位卡牌」（N 是**场面位置**）或「选择对方英雄」。
+    古神衍生效果（克苏恩的子嗣 / 滑行者巨怪的战吼等）选完技能后经常要再点一次
+    目标；泰坦/古神技能那种「技能带目标」的点击顺序不适用于这里——选择框已经
+    变成 ``ChoiceType=TARGET``，只剩一次纯点击。
+    """
+    target: Target
+    turn_number: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class UseLocationAction:
     location_index: int
     card_id: str
@@ -240,6 +253,7 @@ ManualAction = Union[
     TradeCardAction,
     HeroPowerAction,
     DiscoverChoiceAction,
+    ChooseTargetAction,
     UseLocationAction,
     AttackAction,
     LaunchStarshipAction,
@@ -506,6 +520,9 @@ class ClickExecutor:
         return self._safe_action(
             lambda: self.click.choose_discover_card(
                 choice_index, choice_count))
+    def choose_target(self, target, my_count, oppo_count):
+        return self._safe_action(
+            lambda: self._click_target(target, my_count, oppo_count))
 
     def attack(self, attacker, target, my_count, oppo_count):
         return self._safe_action(
@@ -990,6 +1007,16 @@ class ManualController:
                 action.choice_index, action.choice_count)
             return ActionExecutionResult(
                 True, f"已选择发现选项：{action.choice_index + 1}号位")
+
+        if isinstance(action, ChooseTargetAction):
+            if not self._target_exists(action.target, state):
+                return self._reject("选择目标已经不存在，未执行操作。")
+            self.executor.choose_target(
+                self._target_for_click(action.target, state),
+                self._board_slot_count(state, "friendly"),
+                self._board_slot_count(state, "enemy"),
+            )
+            return ActionExecutionResult(True, "已选择目标。")
 
         if isinstance(action, UseLocationAction):
             locations = getattr(state, "my_locations", [])

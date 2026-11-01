@@ -29,6 +29,12 @@ class StrategyState:
         self.oppo_weapon = None
         self.oppo_hand_card_num = 0
         self.discover_choice_count = log_state.discover_choice_count
+        # 游戏是否正等我方为某个效果选目标（ChoiceType=TARGET）。古神衍生牌
+        # （克苏恩的子嗣/滑行者巨怪战吼等）选完技能后常常要再点一个目标。
+        self.target_choice_open = bool(
+            getattr(log_state, "target_choice_open", False))
+        # 当前选择框是不是「拼装」面板（界面上是「选择一项替换」+ 两张候选卡
+        # 和一张结果预览）。它的号位和盒子给的「选择我方N号位卡牌」对不上，
         self.my_player_id = log_state.my_player_id
         self.power_options = deepcopy(log_state.power_options)
         # 本局学到过的泰坦技能顺序（card_id -> {下标: 技能名}）。

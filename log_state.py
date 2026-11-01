@@ -70,9 +70,12 @@ class LogState:
         self.revision = 0
         self.game_generation = 0
         self.general_choice_id = None
+        self.general_choice_type = None
         self.general_choice_player = None
         self.general_choice_indexes = set()
         self.general_choice_ready = False
+        self.general_choice_source_card = ""
+        self.general_choice_source_player = None
         self.power_options = {}
         self.current_power_option_id = None
         # 本局学到过的「卡牌 → {技能下标: 技能名}」：泰坦打出的那个回合服务器会
@@ -181,17 +184,40 @@ class LogState:
 
     @property
     def discover_choice_count(self):
-        if (not self.general_choice_ready
+        # 只认 ChoiceType=GENERAL：「发现/抉择/拼装」这些面板是 GENERAL；
+        # 指向选择（TARGET）虽然也用同一套 DebugPrintEntityChoices，但那是
+        # 「选一个目标」，卡位完全不同（见 target_choice_open）。
+        if (self.general_choice_type != "GENERAL"
+                or not self.general_choice_ready
                 or self.general_choice_player != self.my_player_id):
             return None
         count = len(self.general_choice_indexes)
         return count if 1 <= count <= 4 else None
 
+    @property
+    def target_choice_open(self):
+        """游戏是否正等我方为一个效果选目标（ChoiceType=TARGET）。
+
+        实测 2026-10-24 08:57:50（滑行者巨怪战吼选完「克苏恩的凝视」）：
+        选择框立刻变成 ``ChoiceType=TARGET``，Source=滑行者巨怪(player=1)，
+        实体是对方的两个随从；40 秒后用户手动点了目标才结算。
+        """
+        if (self.general_choice_type != "TARGET"
+                or not self.general_choice_ready):
+            return False
+        source_player = self.general_choice_source_player
+        if source_player is None:
+            return False
+        return str(source_player) == str(self.my_player_id)
+
     def clear_general_choice(self):
         self.general_choice_id = None
+        self.general_choice_type = None
         self.general_choice_player = None
         self.general_choice_indexes = set()
         self.general_choice_ready = False
+        self.general_choice_source_card = ""
+        self.general_choice_source_player = None
 
     def flush(self):
         revision = self.revision
@@ -424,11 +450,27 @@ def update_state(state, line_info_container):
     if line_info_container.line_type == LOG_LINE_GENERAL_CHOICE_START:
         state.clear_general_choice()
         state.general_choice_id = line_info_container.info_dict["choice_id"]
+        state.general_choice_type = line_info_container.info_dict.get(
+            "choice_type")
+
+    if line_info_container.line_type == LOG_LINE_GENERAL_CHOICE_SOURCE:
+        if state.general_choice_id is not None:
+            info = line_info_container.info_dict
+            card_id = info.get("card_id") or ""
+            entity = state.entity_dict.get(info.get("entity_id") or "")
+            state.general_choice_source_card = card_id
+            state.general_choice_source_player = info.get("player")
 
     if line_info_container.line_type == LOG_LINE_GENERAL_CHOICE_ENTITY:
         if state.general_choice_id is not None:
             player = line_info_container.info_dict["player"]
-            if state.general_choice_player in (None, player):
+            if state.general_choice_type == "TARGET":
+                # 指向选择的实体是「可以点的目标」（对方随从/英雄），它们的
+                # player 是原主，不能拿来判断「这是不是我方的选择框」——那一条
+                # 由 Source 行的 player 判定（见 target_choice_open）。
+                state.general_choice_indexes.add(
+                    line_info_container.info_dict["index"])
+            elif state.general_choice_player in (None, player):
                 state.general_choice_player = player
                 state.general_choice_indexes.add(
                     line_info_container.info_dict["index"])

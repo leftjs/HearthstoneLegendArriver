@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 
 from manual_controller import (
+    ChooseTargetAction,
     AttackAction, DiscoverChoiceAction, EndTurnAction, HeroPowerAction,
     FRIENDLY_HAND_TARGET_CARD_IDS, LaunchStarshipAction, PlayCardAction,
     Target, TimelineAction, TitanAbilityAction, TradeCardAction,
@@ -140,6 +141,10 @@ def adapt_action(proposed, state):
     if proposed.action == ActionKind.CHOOSE_DISCOVER:
         choice_count = getattr(state, "discover_choice_count", None)
         if choice_count not in (1, 2, 3, 4):
+            if getattr(state, "target_choice_open", False):
+                # 没有 GENERAL 选择框，但游戏正等我方选目标：盒子这时说的
+                # 「选择我方N号位卡牌」指的是**我方场上**第 N 个随从。
+                return _adapt_friendly_target(proposed, state)
             raise RecommendationStateError(
                 f"discover_choice_count_unavailable:count={choice_count}")
         if (proposed.source is None
@@ -155,6 +160,8 @@ def adapt_action(proposed, state):
             DiscoverChoiceAction(
                 proposed.source.index - 1, choice_count),
             None, None, "choice_resolved")
+    if proposed.action == ActionKind.CHOOSE_TARGET:
+        return _adapt_choose_target(proposed, state)
     if proposed.action == ActionKind.TITAN_ABILITY:
         return _adapt_titan_ability(proposed, state)
     if proposed.action == ActionKind.END_TURN:
@@ -168,6 +175,35 @@ def adapt_action(proposed, state):
         return AdaptedAction(
             TimelineAction("keep"), None, None, "timeline_clicked")
     raise RecommendationStateError("unsupported_action")
+
+
+def _adapt_choose_target(proposed, state):
+    """「选择对方N号位卡牌 / 选择对方英雄」= 效果正在等我方点目标。
+
+    实测 2026-10-24 08:57:50（滑行者巨怪战吼选完「克苏恩的凝视」）：选择框变成
+    ``ChoiceType=TARGET``，实体是对方的两个随从，盒子说「选择对方2号位卡牌」，
+    号位对应的是**场面位置**（对方2号位 = 小鬼奶奶），不是选择框下标。
+    """
+    if proposed.target is None:
+        raise RecommendationStateError("choice_target_required")
+    target, target_id = _board_target(state, proposed.target, "choice")
+    return AdaptedAction(ChooseTargetAction(target), None, target_id,
+                         "target_chosen")
+
+
+def _adapt_friendly_target(proposed, state):
+    """指向选择里盒子的「选择我方N号位卡牌」= 点我方场面第 N 个随从。"""
+    index = getattr(getattr(proposed, "source", None), "index", None)
+    if index is None:
+        raise RecommendationStateError("choice_target_required")
+    entry = board_slot(state, "friendly", index)
+    if entry.kind != "minion":
+        raise RecommendationStateError("target_not_minion")
+    entity_id = getattr(entry.entity, "entity_id", None)
+    return AdaptedAction(
+        ChooseTargetAction(Target("friendly", "minion",
+                                  entry.collection_index, entity_id)),
+        None, entity_id, "target_chosen")
 
 
 def _with_choose_one(proposed, state, adapted, source):
@@ -422,16 +458,20 @@ def _power_option_choices(state, card_id, entity_id):
     return option.get("choices") or None
 
 
-def _titan_target(state, ref):
-    """泰坦技能的目标（随从或英雄），返回 ``(Target, entity_id)``。"""
+def _board_target(state, ref, prefix):
+    """技能目标（随从或英雄），返回 ``(Target, entity_id)``。
+
+    ``prefix`` 只用于诊断码前缀（``titan`` / ``old_god``），便于从日志一眼看出
+    是哪种牌卡住了。
+    """
     side = ref.owner
     if side not in {"friendly", "enemy"}:
-        raise RecommendationStateError("titan_target_unsupported")
+        raise RecommendationStateError(f"{prefix}_target_unsupported")
     if ref.kind == "hero":
         hero = (getattr(state, "my_hero", None) if side == "friendly"
                 else getattr(state, "oppo_hero", None))
         if hero is None:
-            raise RecommendationStateError("titan_target_missing")
+            raise RecommendationStateError(f"{prefix}_target_missing")
         entity_id = getattr(hero, "entity_id", None)
         return Target(side, "hero", None, entity_id), entity_id
     if ref.kind == "board_slot":
@@ -440,7 +480,12 @@ def _titan_target(state, ref):
             raise RecommendationStateError("target_not_minion")
         entity_id = getattr(entry.entity, "entity_id", None)
         return Target(side, "minion", entry.collection_index, entity_id), entity_id
-    raise RecommendationStateError("titan_target_unsupported")
+    raise RecommendationStateError(f"{prefix}_target_unsupported")
+
+
+def _titan_target(state, ref):
+    """泰坦技能的目标（随从或英雄），返回 ``(Target, entity_id)``。"""
+    return _board_target(state, ref, "titan")
 
 
 def _hand_snapshot(cards):

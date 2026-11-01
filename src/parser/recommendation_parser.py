@@ -24,7 +24,7 @@ _TEMPLATE_PATTERNS = (
     "操作0号位泰坦", "操作0号位地标", "操作我方英雄攻击", "操作己方英雄攻击",
     "目标是对方0号位", "目标是敌方0号位", "目标是己方0号位", "目标是我方0号位",
     "目标是对方英雄", "目标是敌方英雄", "目标是己方英雄", "目标是我方英雄",
-    "选择我方0号位卡牌", "选择己方0号位卡牌",
+    "选择我方0号位卡牌", "选择己方0号位卡牌", "选择对方0号位卡牌", "选择对方英雄",
 )
 def _digits_as_marker(line):
     """把数字统一替换成 '0'，用于忽略号位差异的比对。"""
@@ -88,6 +88,13 @@ class RecommendationParser:
     _location = re.compile(r"^操作([1-9]\d*)号位地标$")
     _discover = re.compile(
         rf"^(?:选择{_own}([1-4])号位卡牌|选(?:择)?第([1-4])个选项)$")
+    # 指向选择：效果选完后还要再点一个目标（如「克苏恩的凝视」「克苏恩的子嗣」
+    # 这类古神衍生效果）。盒子这时给的是「选择对方2号位卡牌」——注意它是
+    # **动作行**，不是「目标是…」修饰行；号位是对方场面的位置（不是选择框下标）。
+    _choose_enemy_target = re.compile(
+        r"^选择(?:对方|敌方)([1-9]\d*)号位(?:卡牌|随从)$")
+    _choose_enemy_hero_targets = {"选择对方英雄", "选择敌方英雄"}
+    _choose_own_hero_targets = {"选择我方英雄", "选择己方英雄"}
     # HSAng 时间线提示字：按钮文案可能是纯「回溯/维持」，也可能是带标题的
     # 「回溯时间线/维持时间线」（OCR 也可能把两者读成「回溯」+「时间线」两行，
     # 其中「时间线」非动作行会被过滤，只剩「回溯」）。
@@ -190,7 +197,6 @@ class RecommendationParser:
             or line in self._enemy_hero_targets
             or line in self._friendly_hero_targets
             or line == "选择卡牌")
-
     def _parse_action(self, action_text, ocr, turn_number, log_revision):
         lines = self._lines(action_text)
         if not lines:
@@ -309,6 +315,22 @@ class RecommendationParser:
                 source=SlotRef("discover_slot", "friendly",
                                int(discover.group(1) or discover.group(2))))
 
+        enemy_choice = self._choose_enemy_target.fullmatch(primary)
+        if (enemy_choice or primary in self._choose_enemy_hero_targets
+                or primary in self._choose_own_hero_targets):
+            # 「选择对方2号位卡牌」= 正在等目标：点对方场面第 N 个（N 是场面位置，
+            # 不是选择框下标——实测 08:57:50 的选择框里实体顺序是 [2号位, 1号位]）。
+            if enemy_choice is not None:
+                target = SlotRef("board_slot", "enemy",
+                                 int(enemy_choice.group(1)))
+            elif primary in self._choose_enemy_hero_targets:
+                target = SlotRef("hero", "enemy")
+            else:
+                target = SlotRef("hero", "friendly")
+            return self._build(
+                ocr, turn_number, log_revision, ActionKind.CHOOSE_TARGET,
+                target=target)
+
         attack = self._minion_attack.fullmatch(primary)
         hero_attack = self._hero_attack.fullmatch(primary)
         if attack or hero_attack:
@@ -391,6 +413,9 @@ class RecommendationParser:
                     or self._hero_attack.fullmatch(line)
                     or self._location.fullmatch(line)
                     or self._discover.fullmatch(line)
+                    or self._choose_enemy_target.fullmatch(line)
+                    or line in self._choose_enemy_hero_targets
+                    or line in self._choose_own_hero_targets
                     or line in {self._keep_all, "使用英雄技能", "结束回合"})
 
     def _timeline_of(self, line):

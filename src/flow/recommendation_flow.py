@@ -468,7 +468,7 @@ class RecommendationFlow:
 
     @staticmethod
     def _postcondition(kind, before, after, source_entity_id=None,
-                       target_entity_id=None):
+                       target_entity_id=None, ability_slot=None):
         if kind == "turn_changed":
             return (after.game_num_turns_in_play != before.game_num_turns_in_play
                     or not after.is_my_turn)
@@ -530,6 +530,37 @@ class RecommendationFlow:
             if (getattr(after, "discover_choice_count", None)
                     != getattr(before, "discover_choice_count", None)):
                 return True
+            if (RecommendationFlow._board_signature(after)
+                    != RecommendationFlow._board_signature(before)):
+                return True
+            return (tuple(getattr(card, "entity_id", None)
+                          for card in after.my_hand_cards)
+                    != tuple(getattr(card, "entity_id", None)
+                             for card in before.my_hand_cards))
+        if kind == "target_chosen":
+            # 指向选择：点完目标后 TARGET 选择框会关闭（实测 08:57:50 → 08:58:31）。
+            # 这一条最可靠；拿不到时再看目标有没有掉血/死亡，最后退回场面/手牌变化。
+            if (getattr(before, "target_choice_open", False)
+                    and not getattr(after, "target_choice_open", False)):
+                return True
+            if target_entity_id is not None:
+                old_target = (
+                    RecommendationFlow._entity_by_id(
+                        before.oppo_minions, target_entity_id)
+                    or RecommendationFlow._entity_by_id(
+                        before.my_minions, target_entity_id))
+                new_target = (
+                    RecommendationFlow._entity_by_id(
+                        after.oppo_minions, target_entity_id)
+                    or RecommendationFlow._entity_by_id(
+                        after.my_minions, target_entity_id))
+                if old_target is not None and (
+                        new_target is None
+                        or getattr(new_target, "damage", 0)
+                        != getattr(old_target, "damage", 0)
+                        or getattr(new_target, "max_health", 0)
+                        != getattr(old_target, "max_health", 0)):
+                    return True
             if (RecommendationFlow._board_signature(after)
                     != RecommendationFlow._board_signature(before)):
                 return True

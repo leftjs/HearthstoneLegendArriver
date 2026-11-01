@@ -13,6 +13,7 @@ class ActionKind(str, Enum):
     ATTACK = "attack"
     USE_LOCATION = "use_location"
     CHOOSE_DISCOVER = "choose_discover"
+    CHOOSE_TARGET = "choose_target"
     TITAN_ABILITY = "titan_ability"
     END_TURN = "end_turn"
     TIMELINE_UNDO = "timeline_undo"
