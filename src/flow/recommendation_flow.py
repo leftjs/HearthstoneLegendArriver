@@ -237,6 +237,11 @@ class RecommendationFlow:
                 return FlowStepResult(FlowStepStatus.RETRY, validation.code)
             adapted, key = validation.value
             print(f"[推荐] {proposed.normalized_instruction}")
+            note = getattr(adapted, "note", "")
+            if note:
+                # 面板与日志状态不一致时的单行提示（如手牌类型错位）：让日志里
+                # 直接看出「为什么这一手这么点」，而不是等事后翻 Power.log。
+                print(f"[提示] {note}")
             print("[执行] 开始点击。")
             result = self.controller.execute(adapted.manual_action, fresh_state)
             if not result.executed or result.recovery_needed:

@@ -49,7 +49,11 @@ choose_hero_count = 0
 manual_controller = ManualController(
     input_func=GlobalHotkeyInput(
         keyboard, shutdown_event=shutdown_event),
-    executor=ClickExecutor(click),
+    # 不传 click_module：ClickExecutor 只能在「用真 click 模块」时挂上诊断出口
+    # （[SPELL]/[CLICK] 那些现场快照）。原来显式传 click 会让它判定成测试替身、
+    # 关掉诊断——2026-10-29 22:35 那次「法术没点目标」就因为少了 [SPELL] 行，
+    # 只能靠点击坐标反推。
+    executor=ClickExecutor(),
 )
 auto_mulligan_flow = None
 recommendation_flow = None

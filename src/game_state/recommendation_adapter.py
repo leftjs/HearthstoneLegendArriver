@@ -32,6 +32,9 @@ class AdaptedAction:
     source_entity_id: str | None
     target_entity_id: str | None
     postcondition: str
+    # 单行诊断：适配时发现「面板」与「日志状态」不一致（例如手牌类型/顺序错位）时，
+    # 由流程层打进日志。空串表示没有异常。
+    note: str = ""
 
 
 def _entity_label(entry):
@@ -462,10 +465,23 @@ def _adapt_play_card(proposed, state):
         raise _hand_slot_error("play", proposed.source.index,
                                state.my_hand_cards)
     card = state.my_hand_cards[index]
+    # 出牌行为（随从落点 / 法术要不要点目标 / 武器直接使用）一律按**面板**说的
+    # 类型来执行：盒子读的是游戏里的真实手牌，而日志状态里手牌顺序会错位——
+    # 实测 2026-10-29 22:35：「打出1号位法术 潮起潮落 / 目标是对方1号位」被执行成
+    # 了「点手牌 → 点屏幕中间 → 右键取消」，因为状态把 1 号槽认成了英雄牌
+    # （死亡之翼），走的是英雄牌分支，目标被丢掉。
+    # 状态里的卡号/实体号只用于「这一手还是不是同一张牌」的校验。
+    cardtype = proposed.card_type or getattr(card, "cardtype", None)
+    note = ""
+    if (proposed.card_type and getattr(card, "cardtype", None)
+            and proposed.card_type != card.cardtype):
+        note = (f"手牌类型与面板不一致：面板={proposed.card_type} "
+                f"状态={card.cardtype} 槽位={index + 1}"
+                f"（{getattr(card, 'card_id', None)}），按面板执行")
     gap = None
     manual_target = None
     target_id = None
-    if card.cardtype in {"MINION", "LOCATION"}:
+    if cardtype in {"MINION", "LOCATION"}:
         board_count = len(ordered_board(state, "friendly"))
         gap = (board_count if proposed.destination is None
                else proposed.destination.index - 1)
@@ -512,12 +528,12 @@ def _adapt_play_card(proposed, state):
         else:
             raise RecommendationStateError("targeted_action_unsupported")
     manual = PlayCardAction(
-        index, card.card_id, card.cardtype, gap_index=gap,
+        index, card.card_id, cardtype, gap_index=gap,
         target=manual_target,
         hand_entity_id=getattr(card, "entity_id", None))
     return AdaptedAction(
         manual, getattr(card, "entity_id", None), target_id,
-                         "hand_card_left")
+                         "hand_card_left", note=note)
 
 
 def _adapt_trade_card(proposed, state):

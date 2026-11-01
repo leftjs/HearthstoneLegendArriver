@@ -891,8 +891,11 @@ class ManualController:
             if not 0 <= action.hand_index < len(state.my_hand_cards):
                 return self._reject("手牌位置已经失效，未执行操作。")
             selected = state.my_hand_cards[action.hand_index]
-            if (selected.card_id != action.card_id
-                    or selected.cardtype != action.cardtype):
+            # 只比卡号/实体号，**不比 cardtype**：出牌行为按盒子面板的类型执行
+            # （见 recommendation_adapter._adapt_play_card），而日志状态里的
+            # 手牌类型可能滞后/错位。实测 2026-10-29 22:35：状态把 1 号槽认成
+            # 英雄牌，这里要是再比类型就会把一手正常的「法术+目标」直接拒掉。
+            if selected.card_id != action.card_id:
                 return self._reject("手牌内容已经变化，未执行操作。")
             if (action.hand_entity_id is not None
                     and getattr(selected, "entity_id", None)
