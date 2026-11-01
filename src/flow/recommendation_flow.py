@@ -287,8 +287,12 @@ class RecommendationFlow:
                 # closes; all other confirmed actions retain duplicate
                 # execution protection. 泰坦技能同理：点完泰坦/技能/目标后
                 # 不再重复点，等盒子更新推荐（兵主这类还会弹出「发现」框）。
+                # 古神技能也留着重试：万一这一下没点出去（面板还没弹开），
+                # 下一轮同一个技能还能再点一次；已经用过的技能由适配器按
+                # ACTIVATABLE_MINION_ABILITY_USED_n 拦下，不会重复释放。
                 if proposed.action not in (ActionKind.CHOOSE_DISCOVER,
-                                           ActionKind.TITAN_ABILITY):
+                                           ActionKind.TITAN_ABILITY,
+                                           ActionKind.OLD_GOD_ABILITY):
                     self.consumed.mark_consumed(key)
                 self.waiting_instruction = proposed.normalized_instruction
                 self.waiting_panel_hash = current_frame.perceptual_hash
@@ -412,7 +416,9 @@ class RecommendationFlow:
                        and self._postcondition(
                            adapted.postcondition, before_state, after_state,
                            adapted.source_entity_id,
-                           adapted.target_entity_id))
+                           adapted.target_entity_id,
+                           getattr(adapted.manual_action, "ability_index",
+                                   None)))
         recommendation_changed = False
         try:
             after_frame = self.capture.capture(ocr_panel_ok=True)
@@ -444,6 +450,14 @@ class RecommendationFlow:
             # 「点泰坦→选技能→（可选）点目标」是一次性三步操作，绝不重复点：
             # 技能结算后盒子会给出下一步推荐（兵主还有「发现对应符文的牌」），
             # 所以这里统一按“等盒子更新推荐”处理。
+            return ResultStatus.WAITING_RECOMMENDATION
+        if proposed.action == ActionKind.OLD_GOD_ABILITY:
+            # 古神一回合能连着选多次：只要这次技能真的结算了（日志里已有痕迹）
+            # 就当场算完成并消费掉，好让盒子紧接着给出的**下一个技能**能立刻执行；
+            # 日志还没写出来时按“等盒子更新”处理，不重复点同一张技能牌
+            # （重复点会被适配器按 ACTIVATABLE_MINION_ABILITY_USED_n 拦下）。
+            if log_changed:
+                return ResultStatus.COMPLETED
             return ResultStatus.WAITING_RECOMMENDATION
         if log_changed:
             return ResultStatus.WAITING_RECOMMENDATION
@@ -537,6 +551,55 @@ class RecommendationFlow:
                           for card in after.my_hand_cards)
                     != tuple(getattr(card, "entity_id", None)
                              for card in before.my_hand_cards))
+        if kind == "old_god_ability_used":
+            # 古神技能：用过的技能会打上 ACTIVATABLE_MINION_ABILITY_USED_{槽位+1}
+            # （Power.log 实测，2026-10-24 00:38/00:40 克苏恩）。这一条最直接；
+            # 拿不到标签时（测试桩/日志只读了一半）再退回场面、手牌、水晶、
+            # 发现框这些旁证——只要有一条变了就认为技能确实打出去了。
+            old_god = RecommendationFlow._entity_by_id(
+                before.my_minions, source_entity_id)
+            new_god = RecommendationFlow._entity_by_id(
+                after.my_minions, source_entity_id)
+            if old_god is None:
+                return False
+            if new_god is None:
+                return True
+            if RecommendationFlow._ability_flags_changed(old_god, new_god):
+                return True
+            if ability_slot is not None and ability_slot in (
+                    getattr(new_god, "used_ability_slots", None) or ()):
+                return True
+            if ability_slot is not None and str(
+                    RecommendationFlow._query_tag(
+                        new_god,
+                        f"ACTIVATABLE_MINION_ABILITY_USED_{ability_slot + 1}")
+            ) == "1":
+                return True
+            if getattr(new_god, "exhausted", 0) != getattr(
+                    old_god, "exhausted", 0):
+                return True
+            if getattr(new_god, "damage", 0) != getattr(old_god, "damage", 0):
+                return True
+            if getattr(new_god, "max_health", 0) != getattr(
+                    old_god, "max_health", 0):
+                return True
+            if getattr(new_god, "attack", 0) != getattr(old_god, "attack", 0):
+                return True
+            if (getattr(after, "discover_choice_count", None)
+                    != getattr(before, "discover_choice_count", None)):
+                return True
+            if (getattr(after, "my_last_mana", None)
+                    is not None
+                    and getattr(after, "my_last_mana", None)
+                    != getattr(before, "my_last_mana", None)):
+                return True
+            if (RecommendationFlow._board_signature(after)
+                    != RecommendationFlow._board_signature(before)):
+                return True
+            return (tuple(getattr(card, "entity_id", None)
+                          for card in after.my_hand_cards)
+                    != tuple(getattr(card, "entity_id", None)
+                             for card in before.my_hand_cards))
         if kind == "target_chosen":
             # 指向选择：点完目标后 TARGET 选择框会关闭（实测 08:57:50 → 08:58:31）。
             # 这一条最可靠；拿不到时再看目标有没有掉血/死亡，最后退回场面/手牌变化。
@@ -602,6 +665,31 @@ class RecommendationFlow:
     def _entity_by_id(collection, entity_id):
         return next((entity for entity in collection
                      if getattr(entity, "entity_id", None) == entity_id), None)
+
+    @staticmethod
+    def _query_tag(entity, name):
+        query = getattr(entity, "query_tag", None)
+        if query is None:
+            return "0"
+        try:
+            return str(query(name))
+        except Exception:                        # noqa: BLE001
+            return "0"
+
+    @staticmethod
+    def _ability_flags_changed(old, new):
+        """实体的「技能已用」标记有没有变化。
+
+        Power.log 里这类标记有两种写法：通用的
+        ``ACTIVATABLE_MINION_ABILITY_USED_n`` 和卡牌专属的
+        ``CTHUN_ABILITYn_USED``（写在玩家实体上），所以按名字里是否含
+        ``ABILITY_USED`` / ``_ABILITY`` 一起比。
+        """
+        old_tags = getattr(old, "tag_dict", None) or {}
+        new_tags = getattr(new, "tag_dict", None) or {}
+        keys = {key for key in set(old_tags) | set(new_tags)
+                if "ABILITY_USED" in str(key) or "_ABILITY" in str(key)}
+        return any(old_tags.get(key) != new_tags.get(key) for key in keys)
 
     @staticmethod
     def _board_signature(state):

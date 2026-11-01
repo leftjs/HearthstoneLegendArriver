@@ -15,6 +15,7 @@ class ActionKind(str, Enum):
     CHOOSE_DISCOVER = "choose_discover"
     CHOOSE_TARGET = "choose_target"
     TITAN_ABILITY = "titan_ability"
+    OLD_GOD_ABILITY = "old_god_ability"
     END_TURN = "end_turn"
     TIMELINE_UNDO = "timeline_undo"
     TIMELINE_KEEP = "timeline_keep"

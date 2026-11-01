@@ -5,12 +5,15 @@ from dataclasses import dataclass, replace
 from manual_controller import (
     ChooseTargetAction,
     AttackAction, DiscoverChoiceAction, EndTurnAction, HeroPowerAction,
-    FRIENDLY_HAND_TARGET_CARD_IDS, LaunchStarshipAction, PlayCardAction,
-    Target, TimelineAction, TitanAbilityAction, TradeCardAction,
+    FRIENDLY_HAND_TARGET_CARD_IDS, LaunchStarshipAction, OldGodAbilityAction,
+    PlayCardAction, Target, TimelineAction, TitanAbilityAction, TradeCardAction,
     UseLocationAction,
 )
 from src.recommendation_models import ActionKind
 from src.game_state.choose_one import choose_one_card_ids
+from src.game_state.old_god import (
+    ability_used, old_god_ability_layout, old_god_card_ids,
+)
 from src.game_state.titan import (
     TITAN_ABILITY_COUNT, static_ability_choice, titan_card_ids,
 )
@@ -164,6 +167,8 @@ def adapt_action(proposed, state):
         return _adapt_choose_target(proposed, state)
     if proposed.action == ActionKind.TITAN_ABILITY:
         return _adapt_titan_ability(proposed, state)
+    if proposed.action == ActionKind.OLD_GOD_ABILITY:
+        return _adapt_old_god_ability(proposed, state)
     if proposed.action == ActionKind.END_TURN:
         return AdaptedAction(EndTurnAction(), None, None, "turn_changed")
     if proposed.action == ActionKind.TIMELINE_UNDO:
@@ -226,6 +231,12 @@ def _with_choose_one(proposed, state, adapted, source):
         # 和抉择同形：落地后服务器弹出的就是三张技能牌，选完才轮到目标。
         index, count = _titan_ability_choice(
             state, source.card_id, getattr(source, "entity_id", None), name)
+        return replace(adapted, manual_action=replace(
+            adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
+    if _is_old_god(source):
+        # 古神同理，只是面板是四张。技能名 → 槽位直接查卡牌数据，不依赖日志：
+        # 古神的 subOption 序号在有技能用过之后会变，不能当点击下标。
+        index, count = _old_god_ability_choice(source, name)
         return replace(adapted, manual_action=replace(
             adapted.manual_action, choose_one=DiscoverChoiceAction(index, count)))
     if (isinstance(adapted.manual_action, PlayCardAction)
@@ -347,6 +358,74 @@ def _adapt_titan_ability(proposed, state):
         titan_entity_id=getattr(titan, "entity_id", None))
     return AdaptedAction(manual, getattr(titan, "entity_id", None),
                          target_id, "titan_ability_used")
+
+
+def _is_old_god(entity):
+    """是不是古神：卡表认得的古神卡号，或日志里的 ``OLD_GOD`` 标签。"""
+    if entity is None:
+        return False
+    if getattr(entity, "card_id", None) in old_god_card_ids():
+        return True
+    query = getattr(entity, "query_tag", None)
+    if query is None:
+        return False
+    try:
+        return str(query("OLD_GOD")) == "1"
+    except Exception:                            # noqa: BLE001
+        return False
+
+
+def _old_god_ability_choice(entity, name):
+    """古神技能名 → ``(面板槽位, 技能数量)``；名字/卡牌认不出就报错重试。"""
+    card_id = getattr(entity, "card_id", None)
+    layout = old_god_ability_layout(card_id)
+    names = "[" + ", ".join(layout) + "]" if layout else "-"
+    if not layout:
+        raise RecommendationStateError(
+            f"old_god_ability_layout_unknown:card={card_id}")
+    if name not in layout:
+        raise RecommendationStateError(
+            f"old_god_ability_name_unknown:card={card_id}:name={name}"
+            f":known={names}")
+    index = layout[name]
+    if ability_used(entity, index):
+        # 古神技能每局每个只能用一次：日志已记「用过」就别再点（点了也只是
+        # 灰牌），等盒子刷新出别的推荐。
+        raise RecommendationStateError(
+            f"old_god_ability_already_used:card={card_id}:name={name}"
+            f":slot={index + 1}")
+    return index, len(layout)
+
+
+def _adapt_old_god_ability(proposed, state):
+    """「操作N号位随从攻击」+「选择卡牌 技能名」= 古神技能的执行计划。
+
+    点击顺序与盒子文字顺序无关：先点自己场上的古神弹出四张技能牌，再点技能，
+    最后（技能需要目标时）点目标。同一回合里盒子会给下一条（另一个技能）推荐，
+    所以这里是**一次性动作**，不涉及「整张牌已消费」。
+    """
+    entry = board_slot(state, "friendly", proposed.source.index)
+    if entry.kind != "minion":
+        raise RecommendationStateError("source_not_minion")
+    old_god = entry.entity
+    if not _is_old_god(old_god):
+        raise RecommendationStateError(
+            f"old_god_card_unknown:card={getattr(old_god, 'card_id', None)}")
+    name = getattr(proposed, "choice_name", None)
+    if not name:
+        raise RecommendationStateError("old_god_ability_name_required")
+    index, count = _old_god_ability_choice(old_god, name)
+    target = None
+    target_id = None
+    if proposed.target is not None:
+        target, target_id = _board_target(
+            state, proposed.target, "old_god")
+    manual = OldGodAbilityAction(
+        entry.collection_index, getattr(old_god, "card_id", None), index, count,
+        ability_name=name, target=target,
+        old_god_entity_id=getattr(old_god, "entity_id", None))
+    return AdaptedAction(manual, getattr(old_god, "entity_id", None),
+                         target_id, "old_god_ability_used")
 
 
 def _choices_brief(options):

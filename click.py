@@ -327,6 +327,19 @@ def choose_titan_ability(choice_index, choice_count):
     choose_discover_card(choice_index, choice_count)
 
 
+def choose_old_god_ability(choice_index, choice_count):
+    """点击古神技能面板里的第 choice_index 张技能牌（0 基）。
+
+    实测（2026-10-24 00:38，克苏恩，1920x1080）：面板和泰坦/发现共用同一套居中
+    卡牌布局，四张技能牌一排、y=500；当时机器人误点 (959,401) 命中的正是**第二张**
+    技能牌，与 DISCOVER_CARD_X[4] 的卡面范围吻合。所以四张的卡位直接复用它。
+    """
+    assert choice_count in DISCOVER_CARD_X
+    _debug_click(f"古神技能第 {choice_index + 1} 张（共{choice_count}张）")
+    choose_discover_card(choice_index, choice_count)
+
+
+# ---------------------------------------------------------------- 拼装（选择一项替换）
 def click_setting():
     rand_sleep(OPERATE_INTERVAL)
     left_click(1895, 1060)

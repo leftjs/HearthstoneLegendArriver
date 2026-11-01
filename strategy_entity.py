@@ -42,7 +42,7 @@ class StrategyMinion(StrategyEntity):
         battlecry=0, not_targeted_by_spell=0, not_targeted_by_power=0,
         charge=0, rush=0, attackable_by_rush=0, frozen=0, dormant=0,
         untouchable=0, immune=0, cant_attack=0, exhausted=1,
-        num_turns_in_play=1,
+        num_turns_in_play=1, used_ability_slots=(),
     ):
         super().__init__(
             entity_id, card_id, zone, zone_pos, current_cost, overload, is_mine)
@@ -70,6 +70,9 @@ class StrategyMinion(StrategyEntity):
         self.cant_attack = cant_attack
         self.exhausted = exhausted
         self.num_turns_in_play = num_turns_in_play
+        # 古神/泰坦这类「点开面板选技能」的牌：已经用掉的技能槽位（0 基）。
+        # 古神技能每局每个只能用一次，适配器靠它拦住重复点击。
+        self.used_ability_slots = frozenset(used_ability_slots or ())
 
     @property
     def cardtype(self):

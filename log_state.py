@@ -5,6 +5,7 @@ from json_op import *
 from strategy_entity import *
 from print_info import *
 import constants.constants
+from src.game_state.old_god import OLD_GOD_ABILITY_COUNT, ability_used_tag
 from src.game_state.titan import titan_card_ids
 
 MY_NAME = constants.constants.YOUR_NAME
@@ -277,6 +278,21 @@ class Entity:
     def zone(self):
         return self.query_tag("ZONE")
 
+    @property
+    def used_ability_slots(self):
+        """已经用掉的技能槽位（0 基），来自 ACTIVATABLE_MINION_ABILITY_USED_n。
+
+        古神/泰坦这类「点开面板选技能」的随从，服务器会在用掉某个技能后给本体
+        打上这个标签（实测 2026-10-24 克苏恩：用完凝视/仆从分别置
+        ACTIVATABLE_MINION_ABILITY_USED_3/4=1）。古神技能每局每个只能用一次，
+        适配器靠它拦住「同一张技能牌被重复点」。
+        """
+        used = set()
+        for slot in range(1, OLD_GOD_ABILITY_COUNT + 1):
+            if str(self.query_tag(ability_used_tag(slot - 1))) == "1":
+                used.add(slot - 1)
+        return frozenset(used)
+
 
 class GameEntity(Entity):
     pass
@@ -330,6 +346,7 @@ class CardEntity(Entity):
                 exhausted=int(self.query_tag("EXHAUSTED")),
                 cant_attack=int(self.query_tag("CANT_ATTACK")),
                 num_turns_in_play=int(self.query_tag("NUM_TURNS_IN_PLAY")),
+                used_ability_slots=self.used_ability_slots,
             )
         elif self.cardtype == "SPELL":
             return StrategySpell(

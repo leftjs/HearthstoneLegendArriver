@@ -334,6 +334,19 @@ class RecommendationParser:
         attack = self._minion_attack.fullmatch(primary)
         hero_attack = self._hero_attack.fullmatch(primary)
         if attack or hero_attack:
+            if attack and self._has_choice_marker(lines):
+                # 古神：盒子把「点场上的古神 → 选技能 →（可选）点目标」写成
+                # 「操作N号位随从攻击」+「选择卡牌 技能名」。真攻击绝不会带
+                # 「选择卡牌」，所以这一行就是古神技能的唯一判据；技能名要等
+                # 适配器按卡牌数据换成面板下标。
+                target = self._optional_board_or_hero_target(
+                    lines, "unsupported_old_god_target")
+                return self._build(
+                    ocr, turn_number, log_revision,
+                    ActionKind.OLD_GOD_ABILITY,
+                    source=SlotRef("board_slot", "friendly",
+                                   int(attack.group(1))),
+                    target=target)
             targets = [self._target.fullmatch(line) for line in lines]
             targets = [match for match in targets if match]
             targets.extend(
@@ -418,6 +431,12 @@ class RecommendationParser:
                     or line in self._choose_own_hero_targets
                     or line in {self._keep_all, "使用英雄技能", "结束回合"})
 
+    @staticmethod
+    def _has_choice_marker(lines):
+        """面板里有「选择卡牌」这一行（古神技能/抉择/泰坦技能的共同标志）。"""
+        return any(line == "选择卡牌" for line in lines)
+
+
     def _timeline_of(self, line):
         match = self._timeline.fullmatch(line)
         if match is None:
@@ -458,7 +477,8 @@ class RecommendationParser:
         markers = [i for i, line in enumerate(lines) if line == "选择卡牌"]
         choice_name = None
         if markers and action in (ActionKind.PLAY_CARD, ActionKind.USE_HERO_POWER,
-                                  ActionKind.TITAN_ABILITY):
+                                  ActionKind.TITAN_ABILITY,
+                                  ActionKind.OLD_GOD_ABILITY):
             if len(markers) != 1 or markers[0] + 1 >= len(lines):
                 raise RecommendationParseError("choose_one_name_required")
             choice_name = lines[markers[0] + 1]
@@ -468,6 +488,9 @@ class RecommendationParser:
         if action == ActionKind.TITAN_ABILITY and choice_name is None:
             # 没有技能名就无法确定点哪张技能牌，宁可重试也不猜着点。
             raise RecommendationParseError("titan_ability_name_required")
+        if action == ActionKind.OLD_GOD_ABILITY and choice_name is None:
+            # 古神同理：技能名缺了就不知道点四张技能牌里的第几张。
+            raise RecommendationParseError("old_god_ability_name_required")
         return ProposedAction(
             action_id=f"action-{uuid.uuid4()}", frame_id=ocr.frame_id,
             created_at=time.time(), turn_number=turn_number,

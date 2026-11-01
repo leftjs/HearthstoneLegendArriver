@@ -220,6 +220,25 @@ class TitanAbilityAction:
 
 
 @dataclass(frozen=True)
+class OldGodAbilityAction:
+    """古神技能：点古神 → 在四张技能牌里选一张 →（可选）点目标。
+
+    和泰坦技能只差两点：
+      * 技能面板是**四张**（ability_count=4，槽位 0..3 对应卡牌子牌 t 序号升序）；
+      * 古神一回合里可以连着选多次，所以这条动作**不是**「整张牌已消费」，
+        执行完盒子会直接给出下一个技能（或别的）推荐。
+    """
+    old_god_index: int
+    card_id: str
+    ability_index: int
+    ability_count: int
+    ability_name: Optional[str] = None
+    target: Optional[Target] = None
+    old_god_entity_id: Optional[str] = None
+    turn_number: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class EndTurnAction:
     turn_number: Optional[int] = None
 
@@ -258,6 +277,7 @@ ManualAction = Union[
     AttackAction,
     LaunchStarshipAction,
     TitanAbilityAction,
+    OldGodAbilityAction,
     EndTurnAction,
     RefreshAction,
     TimelineAction,
@@ -469,6 +489,33 @@ class ClickExecutor:
         # 技能需要目标时再点目标。这里**不再右击取消**：兵主这类卡技能结算后
         # 会紧接着弹出「发现对应符文的牌」，右击有把那个选择框点掉的风险，
         # 而残留状态下一轮开头已经由 cancel_click 清掉。
+        if target is not None:
+            self.sleep(0.3)
+            self._click_target(target, my_count, oppo_count)
+
+    def old_god_ability(self, old_god_screen_index, board_count, ability_index,
+                        ability_count, target=None, my_count=0, oppo_count=0,
+                        cancel_first=True):
+        return self._safe_action(lambda: self._old_god_ability(
+            old_god_screen_index, board_count, ability_index, ability_count,
+            target, my_count, oppo_count, cancel_first))
+
+    def _old_god_ability(self, old_god_screen_index, board_count, ability_index,
+                         ability_count, target, my_count, oppo_count,
+                         cancel_first=True):
+        # 与泰坦同一套流程：右击清残留 → 点古神开面板 → 点技能 →（可选）点目标。
+        # 未使用的技能点一下就会关掉面板，所以同一回合的下一个技能要重新点古神，
+        # 每一轮都会重新走一遍 cancel_click（不会把面板当残留点掉）。
+        if cancel_first:
+            self.click.cancel_click()
+        self.click.choose_my_board_entity(old_god_screen_index, board_count)
+        # 等四张技能牌弹出（和发现/抉择同一套居中卡牌布局）。
+        self.sleep(0.3)
+        self._select_choose_one(
+            DiscoverChoiceAction(ability_index, ability_count),
+            getattr(self.click, "choose_old_god_ability", None))
+        # 技能需要目标时再点目标；这里不右击：技能结算后可能紧跟着弹「发现」
+        # 一类的必选框（恩佐斯的召唤），右击会把它点掉。
         if target is not None:
             self.sleep(0.3)
             self._click_target(target, my_count, oppo_count)
@@ -1096,6 +1143,38 @@ class ManualController:
             )
             name = action.ability_name or f"{action.ability_index + 1}号位技能"
             return ActionExecutionResult(True, f"已使用泰坦技能：{name}")
+
+        if isinstance(action, OldGodAbilityAction):
+            if not 0 <= action.old_god_index < len(state.my_minions):
+                return self._reject("古神位置已经失效，未执行操作。")
+            old_god = state.my_minions[action.old_god_index]
+            if old_god.card_id != action.card_id:
+                return self._reject("古神内容已经变化，未执行操作。")
+            if (action.old_god_entity_id is not None
+                    and getattr(old_god, "entity_id", None)
+                    != action.old_god_entity_id):
+                return self._reject("古神对象已经变化，未执行操作。")
+            if (action.ability_count not in (1, 2, 3, 4)
+                    or not 0 <= action.ability_index < action.ability_count):
+                return self._reject("古神技能选项已经失效，未执行操作。")
+            if not self._target_exists(action.target, state):
+                return self._reject("古神技能目标已经不存在，未执行操作。")
+            zone_pos = getattr(old_god, "zone_pos", 0)
+            board_count = self._board_slot_count(state, "friendly")
+            if not 1 <= zone_pos <= board_count:
+                return self._reject("古神战场位置未知，未执行操作。")
+            self.executor.old_god_ability(
+                zone_pos - 1,
+                board_count,
+                action.ability_index,
+                action.ability_count,
+                self._target_for_click(action.target, state),
+                board_count,
+                self._board_slot_count(state, "enemy"),
+                cancel_first=getattr(state, "discover_choice_count", None) is None,
+            )
+            name = action.ability_name or f"{action.ability_index + 1}号位技能"
+            return ActionExecutionResult(True, f"已使用古神技能：{name}")
 
         if isinstance(action, AttackAction):
             if not self._target_exists(action.attacker, state):
