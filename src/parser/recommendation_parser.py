@@ -56,6 +56,13 @@ def _near_template(line):
     return ""
 
 
+# 拼装括号里除「卡位+词条号」之外允许出现的字符：只有括号与分隔符。OCR 把
+# 【】读成 []、［］、（）都可能，所以先归一成「内容」，出现别的字就说明这句
+# 不是我们认识的拼装文案——宁可重试，也不照着一个猜出来的卡位去点。
+_ASSEMBLE_SPEC_FILLER = frozenset(
+    "【】［］[]〔〕{}（）()「」『』<>《》:：,，、;；.。·-—_ \t")
+
+
 def _action_text_diag(text):
     """把归一化后的面板文本压成单行诊断串（保留全部行，仅替换换行）。"""
     normalized = " / ".join(
@@ -98,6 +105,11 @@ class RecommendationParser:
     # HSAng 时间线提示字：按钮文案可能是纯「回溯/维持」，也可能是带标题的
     # 「回溯时间线/维持时间线」（OCR 也可能把两者读成「回溯」+「时间线」两行，
     # 其中「时间线」非动作行会被过滤，只剩「回溯」）。
+    # 拼装面板：盒子新版（2026-10-29 23:01 实测）直接给出「卡位+词条号」，形如
+    # 「进行拼装【右2中1】」= 右侧候选卡第 2 条词条 → 中间结果卡第 1 条词条，
+    # 按给的**先后顺序**点，最后点「拼装」确认。旧版只说「选择我方N号位卡牌」。
+    _assemble_head = "进行拼装"
+    _assemble_pick = re.compile(r"(左|中|右)\s*([1-9])")
     _timeline = re.compile(r"^(回溯|维持)\s*(?:时间线)?$")
     _reference_a_headers = {"打法参考A", "打法参考Ａ"}
     _reference_b_headers = {"打法参考B", "打法参考Ｂ"}
@@ -136,6 +148,10 @@ class RecommendationParser:
         parser = cls()
         lines = parser._reference_a_lines(text or "")
         lines = [cls._fix_ocr_variants(line) for line in lines]
+        # 拼装文案的「卡位+词条号」可能被 OCR 切到单独一行（「【右2中1】」），
+        # 那不是动作行，但里面有盒子给的点击序列，必须留下来交给解析器。
+        has_assemble_head = any(
+            line.startswith(cls._assemble_head) for line in lines)
         retained = []
         for index, line in enumerate(lines):
             if (parser._is_action_line(line)
@@ -145,6 +161,8 @@ class RecommendationParser:
                     or line in parser._enemy_hero_targets
                     or "目标" in line
                     or line == "选择卡牌"
+                    or (has_assemble_head
+                        and cls._assemble_pick.search(line))
                     or (index > 0 and lines[index - 1] == "选择卡牌")):
                 retained.append(line)
         return "\n".join(retained)
@@ -315,6 +333,10 @@ class RecommendationParser:
                 source=SlotRef("discover_slot", "friendly",
                                int(discover.group(1) or discover.group(2))))
 
+        if primary.startswith(self._assemble_head):
+            return self._parse_assemble(
+                primary, lines, ocr, turn_number, log_revision)
+
         enemy_choice = self._choose_enemy_target.fullmatch(primary)
         if (enemy_choice or primary in self._choose_enemy_hero_targets
                 or primary in self._choose_own_hero_targets):
@@ -426,6 +448,7 @@ class RecommendationParser:
                     or self._hero_attack.fullmatch(line)
                     or self._location.fullmatch(line)
                     or self._discover.fullmatch(line)
+                    or line.startswith(self._assemble_head)
                     or self._choose_enemy_target.fullmatch(line)
                     or line in self._choose_enemy_hero_targets
                     or line in self._choose_own_hero_targets
@@ -436,6 +459,35 @@ class RecommendationParser:
         """面板里有「选择卡牌」这一行（古神技能/抉择/泰坦技能的共同标志）。"""
         return any(line == "选择卡牌" for line in lines)
 
+    def _parse_assemble(self, primary, lines, ocr, turn_number, log_revision):
+        """「进行拼装【右2中1】」= 拼装面板的点击序列。
+
+        盒子新版直接给出卡位与词条号（左/中/右 = 面板上三张卡，数字 = 该卡第几条
+        词条），按**给的先后顺序**点击，点完再点「拼装」确认。旧版盒子只会说
+        「选择我方N号位卡牌」，那种没有卡位信息，交给适配器的默认策略。
+        """
+        tail = primary[len(self._assemble_head):]
+        rest = self._assemble_pick.sub("", tail)
+        if any(ch not in _ASSEMBLE_SPEC_FILLER for ch in rest):
+            raise RecommendationParseError("assemble_pick_unsupported")
+        picks = [(position, int(index))
+                 for position, index in self._assemble_pick.findall(tail)]
+        if not picks:
+            # OCR 可能把括号里的内容切到下一行（「进行拼装」/「【右2中1】」），
+            # 这时从后续行里捞——只要还带卡位+词条号就算数。
+            for line in lines:
+                if line == primary:
+                    continue
+                picks.extend((position, int(index)) for position, index
+                             in self._assemble_pick.findall(line))
+        if not picks:
+            raise RecommendationParseError("assemble_pick_required")
+        if any(not 1 <= index <= 2 for _, index in picks):
+            # 拼装面板每张卡只有上下两条词条；给到 3 说明不是我们认识的句式。
+            raise RecommendationParseError("assemble_entry_out_of_range")
+        return self._build(ocr, turn_number, log_revision,
+                           ActionKind.CHOOSE_DISCOVER,
+                           assemble_picks=tuple(picks))
 
     def _timeline_of(self, line):
         match = self._timeline.fullmatch(line)

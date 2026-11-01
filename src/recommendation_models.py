@@ -83,6 +83,10 @@ class ProposedAction:
     ocr_confidence: float = 0.0
     semantic_confidence: float = 0.0
     choice_name: Optional[str] = None
+    # 拼装面板的点击序列：盒子新文案「进行拼装【右2中1】」直接给出「卡位+词条号」，
+    # 元组按盒子给的先后顺序排列，元素形如 ``("右", 2)``。空元组表示盒子没说清
+    # （旧文案），由适配器退回默认策略。
+    assemble_picks: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)

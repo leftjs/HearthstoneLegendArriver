@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 
 from manual_controller import (
-    ChooseTargetAction,
+    AssembleChoiceAction, ChooseTargetAction,
     AttackAction, DiscoverChoiceAction, EndTurnAction, HeroPowerAction,
     FRIENDLY_HAND_TARGET_CARD_IDS, LaunchStarshipAction, OldGodAbilityAction,
     PlayCardAction, Target, TimelineAction, TitanAbilityAction, TradeCardAction,
@@ -142,6 +142,16 @@ def adapt_action(proposed, state):
         return AdaptedAction(manual, getattr(location, "entity_id", None),
                              target_id, "location_changed")
     if proposed.action == ActionKind.CHOOSE_DISCOVER:
+        picks = tuple(getattr(proposed, "assemble_picks", ()) or ())
+        if picks:
+            # 盒子新版文案「进行拼装【右2中1】」自带完整点击序列：卡位+词条号都在
+            # 文本里，既不需要日志里的候选实体数（它和屏幕卡位对不上），也不依赖
+            # assemble_choice 标记，直接照盒子点。
+            spec = "".join(f"{position}{entry}" for position, entry in picks)
+            return AdaptedAction(
+                AssembleChoiceAction(picks=picks), None, None,
+                "choice_resolved",
+                note=f"拼装面板：按盒子【{spec}】逐条点词条，再点「拼装」确认")
         choice_count = getattr(state, "discover_choice_count", None)
         if choice_count not in (1, 2, 3, 4):
             if getattr(state, "target_choice_open", False):
@@ -150,6 +160,13 @@ def adapt_action(proposed, state):
                 return _adapt_friendly_target(proposed, state)
             raise RecommendationStateError(
                 f"discover_choice_count_unavailable:count={choice_count}")
+        if getattr(state, "assemble_choice", False):
+            # 拼装面板（「选择一项替换」）：日志里的候选实体数（4）和屏幕卡位
+            # （3 张）对不上，旧版盒子给的「N 号位」没有意义。新版盒子的
+            # 「进行拼装【右2中1】」已经走上面的 picks 分支；这里只留给旧文案：
+            # 按需求固定点第二张候选卡的第二条词条。
+            return AdaptedAction(
+                AssembleChoiceAction(), None, None, "choice_resolved")
         if (proposed.source is None
                 or proposed.source.kind != "discover_slot"
                 or proposed.source.owner != "friendly"

@@ -165,6 +165,20 @@ class DiscoverChoiceAction:
 
 
 @dataclass(frozen=True)
+class AssembleChoiceAction:
+    """拼装面板（界面标题「选择一项替换」）：按盒子给的点击序列选词条，再点
+    「拼装」确认。
+
+    盒子新版文案「进行拼装【右2中1】」直接给出卡位与词条号，放进 ``picks``
+    （``(("右", 2), ("中", 1))``，顺序就是点击顺序）；旧文案（「选择我方N号位
+    卡牌」）没有卡位信息，``picks`` 为空，退回「右卡第 2 条 → 拼装」的默认路径
+    （详见 src/game_state/assemble.py 与 click.ASSEMBLE_ENTRY_X）。
+    """
+    turn_number: Optional[int] = None
+    picks: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChooseTargetAction:
     """指向选择：游戏正在等我方为一个已经选好的效果点目标。
 
@@ -272,6 +286,7 @@ ManualAction = Union[
     TradeCardAction,
     HeroPowerAction,
     DiscoverChoiceAction,
+    AssembleChoiceAction,
     ChooseTargetAction,
     UseLocationAction,
     AttackAction,
@@ -567,6 +582,19 @@ class ClickExecutor:
         return self._safe_action(
             lambda: self.click.choose_discover_card(
                 choice_index, choice_count))
+
+    def assemble_choice(self, picks=()):
+        return self._safe_action(lambda: self._assemble_choice(picks))
+
+    def _assemble_choice(self, picks=()):
+        # 拼装面板：按盒子给的卡位/词条号逐条点，最后点「拼装」确认。坐标是
+        # 1920x1080 实测（click.ASSEMBLE_ENTRY_X / click.ASSEMBLE_CONFIRM）。
+        picks = tuple(picks or ())
+        if picks:
+            self.click.choose_assemble_entries(picks)
+        else:
+            self.click.choose_assemble_option()
+
     def choose_target(self, target, my_count, oppo_count):
         return self._safe_action(
             lambda: self._click_target(target, my_count, oppo_count))
@@ -1054,6 +1082,15 @@ class ManualController:
                 action.choice_index, action.choice_count)
             return ActionExecutionResult(
                 True, f"已选择发现选项：{action.choice_index + 1}号位")
+
+        if isinstance(action, AssembleChoiceAction):
+            # 拼装面板不依赖任何实体/槽位：盒子怎么说就怎么点。
+            picks = tuple(action.picks or ())
+            self.executor.assemble_choice(picks)
+            spec = "".join(
+                f"{position}{entry}" for position, entry in picks)
+            return ActionExecutionResult(
+                True, f"已按盒子拼装【{spec or '右2(旧文案默认)'}】并确认。")
 
         if isinstance(action, ChooseTargetAction):
             if not self._target_exists(action.target, state):

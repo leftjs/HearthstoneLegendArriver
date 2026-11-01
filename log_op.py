@@ -86,6 +86,8 @@ GENERAL_CHOICE_ENTITY_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "
     r"GameState\.DebugPrintEntityChoices\(\) - +Entities\[(\d+)\]="
     r".* player=(\d+)\]$")
+# 选择框的发起者（拼装/发现/抉择/指向都会带这一行）。拼装面板要靠它认出来：
+# 盒子的「选择我方N号位卡牌」在拼装面板上对不上任何卡位（实测 2026-10-24 06:34）；
 # 指向选择（ChoiceType=TARGET）也要靠 Source 的 player 区分「我方在选目标」。
 GENERAL_CHOICE_SOURCE_PATTERN = re.compile(
     r"D [\d]{2}:[\d]{2}:[\d]{2}\.[\d]{7} "

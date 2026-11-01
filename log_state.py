@@ -5,6 +5,7 @@ from json_op import *
 from strategy_entity import *
 from print_info import *
 import constants.constants
+from src.game_state.assemble import is_assemble_choice
 from src.game_state.old_god import OLD_GOD_ABILITY_COUNT, ability_used_tag
 from src.game_state.titan import titan_card_ids
 
@@ -75,8 +76,10 @@ class LogState:
         self.general_choice_player = None
         self.general_choice_indexes = set()
         self.general_choice_ready = False
+        # 当前选择框的发起者（卡号/玩家）。拼装面板与「指向选择」都靠它识别。
         self.general_choice_source_card = ""
         self.general_choice_source_player = None
+        self.general_choice_assemble = False
         self.power_options = {}
         self.current_power_option_id = None
         # 本局学到过的「卡牌 → {技能下标: 技能名}」：泰坦打出的那个回合服务器会
@@ -219,6 +222,7 @@ class LogState:
         self.general_choice_ready = False
         self.general_choice_source_card = ""
         self.general_choice_source_player = None
+        self.general_choice_assemble = False
 
     def flush(self):
         revision = self.revision
@@ -477,6 +481,8 @@ def update_state(state, line_info_container):
             entity = state.entity_dict.get(info.get("entity_id") or "")
             state.general_choice_source_card = card_id
             state.general_choice_source_player = info.get("player")
+            state.general_choice_assemble = is_assemble_choice(
+                card_id, entity)
 
     if line_info_container.line_type == LOG_LINE_GENERAL_CHOICE_ENTITY:
         if state.general_choice_id is not None:

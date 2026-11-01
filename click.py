@@ -340,6 +340,54 @@ def choose_old_god_ability(choice_index, choice_count):
 
 
 # ---------------------------------------------------------------- 拼装（选择一项替换）
+# 拼装面板不是「发现」那套居中卡牌：标题「选择一项替换」，中间一张大卡（拼装结果
+# 预览），左右各一张候选卡（每张候选卡拆成上下两段「词条」），下面还有「隐藏」
+# 「拼装」两个按钮。
+# 实测 2026-10-24 06:49 截图（1920x1080，像素检测得到的文本框外框）：
+#   * 左候选卡词条框 x[387-646]（中心 516）、右候选卡 x[1206-1466]（中心 1336），
+#     中间结果卡的文字区 x≈787..1045（中心 916）；
+#   * 上段词条中心 y=481，下段词条中心 y=600（框高≈82，行距 119）；
+#   * 「拼装」按钮中心 (930, 790)，「隐藏」按钮中心 (450, 790)。
+# 盒子新版文案「进行拼装【右2中1】」直接点名卡位与词条号，照它点即可；旧文案
+# （「选择我方N号位卡牌」）只保留原来「右卡第 2 条 → 拼装」的默认路径。
+ASSEMBLE_ENTRY_X = {"左": 516, "中": 916, "右": 1336}
+ASSEMBLE_ENTRY_Y = (481, 600)
+ASSEMBLE_CONFIRM = (930, 790)
+ASSEMBLE_HIDE = (450, 790)
+ASSEMBLE_SECOND_OPTION = (ASSEMBLE_ENTRY_X["右"], ASSEMBLE_ENTRY_Y[1])
+# 日志里的说法：中→中间，别写成「中侧」。
+ASSEMBLE_POSITION_LABEL = {"左": "左侧", "中": "中间", "右": "右侧"}
+
+
+def assemble_entry_xy(position, entry):
+    """拼装面板上「某张卡的第几条词条」对应的点击坐标。"""
+    assert position in ASSEMBLE_ENTRY_X, position
+    assert 1 <= entry <= len(ASSEMBLE_ENTRY_Y), entry
+    return ASSEMBLE_ENTRY_X[position], ASSEMBLE_ENTRY_Y[entry - 1]
+
+
+def choose_assemble_entries(picks):
+    """按盒子给的点击序列选词条，最后点「拼装」确认。
+
+    ``picks`` 形如 ``(("右", 2), ("中", 1))``——顺序就是盒子写的顺序。
+    """
+    for position, entry in picks:
+        x, y = assemble_entry_xy(position, entry)
+        label = ASSEMBLE_POSITION_LABEL.get(position, position)
+        _debug_click(f"拼装面板{label}第{entry}条词条 ({x},{y})")
+        left_click(x, y)
+        # 每点一条，拼装结果的预览都会重排，等一拍再点下一条。
+        rand_sleep(0.4)
+    _debug_click(
+        f"拼装确认按钮 ({ASSEMBLE_CONFIRM[0]},{ASSEMBLE_CONFIRM[1]})")
+    left_click(*ASSEMBLE_CONFIRM)
+
+
+def choose_assemble_option():
+    """旧文案兼容：盒子只说「选择我方N号位卡牌」时点右卡第 2 条再确认。"""
+    choose_assemble_entries((("右", 2),))
+
+
 def click_setting():
     rand_sleep(OPERATE_INTERVAL)
     left_click(1895, 1060)
